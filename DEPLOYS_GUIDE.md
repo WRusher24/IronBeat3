@@ -109,7 +109,15 @@ npm run db:push
 npm run db:studio
 ```
 
-Confirm these tables exist: `users`, `playlists`, `playlist_tracks`, `favorites`, `search_history`, `track_plays`, plus their indexes and foreign keys.
+Confirm these tables exist: `users`, `playlists`, `playlist_tracks`, `favorites`, `search_history`, `track_plays`, and `stream_sources`, plus their indexes and foreign keys.
+
+`stream_sources` is the shared 15-minute cache of resolved media URLs used by the iOS audio relay. Apply the additive migration after pulling this version:
+
+```bash
+npm run db:migrate
+```
+
+If the table is missing, playback still works because the signed relay token carries the resolved media URL, but repeated retries and fallback source lookups will be slower.
 
 ---
 
@@ -242,7 +250,8 @@ Current behavior:
 - Stream lookup: Invidious with `local=true` (proxied, iOS-friendly) first, then other Invidious instances, then Piped audio or muxed MP4.
 - The client tries every returned source before requesting a fresh resolution.
 - Failed instances are cooled down for two minutes on that server instance.
-- iPhone and iPad play through the authenticated same-origin relay at `/api/audio/[videoId]/stream`. The relay forwards range requests, retries sources server-side, and falls back to a fresh Piped resolution. This avoids requiring the phone itself to reach third-party media hosts. The route declares `maxDuration = 300`; if your Vercel plan enforces a lower limit, very long single connections may be cut and the client falls back to direct sources.
+- iPhone and iPad play through the authenticated same-origin relay at `/api/audio/[videoId]/stream`. The relay forwards range requests and uses a signed token that already contains the best resolved media URL, so range requests do not re-resolve providers. It prefers direct Invidious media URLs server-side, then cached/proxied sources, then a fresh provider resolution. This avoids requiring the phone itself to reach third-party media hosts. The route declares `maxDuration = 300`; if your Vercel plan enforces a lower limit, very long single connections may be cut and the client falls back to direct sources.
+- Resolution now runs provider lookups in parallel (with short 6-second caps) and ignores stream cooldowns, because a transient failure in the only working instance was previously excluding it for 90 seconds.
 
 For a dependable personal deployment, self-host Piped or Invidious:
 
@@ -299,10 +308,11 @@ Mobile browsers can block media started after an asynchronous fetch. IronBeat un
 
 ### iPhone shows results but audio never starts
 
-- Confirm the app is version **1.1.0 or newer** in Settings. Settings also shows **iOS relay** when the iPhone is using the same-origin audio route.
+- Confirm the app is version **1.1.1 or newer** in Settings. Settings also shows **iOS relay** when the iPhone is using the same-origin audio route.
 - The first playback requires a tap. If you see **Tap play to start audio**, tap it once.
 - Close and reopen the home-screen app, or remove/re-add it so the updated service worker and bundle load.
-- If it still fails, the relay may be returning an error. Check Vercel function logs for `/api/audio/.../stream`; a 401 means the signed relay token expired or the session is invalid (pause/replay the track to mint a fresh token), and a 502 means the server could not reach any provider.
+- If it still fails, the relay may be returning an error. Check Vercel function logs for `/api/audio/.../stream`; a 401 means the signed relay token expired or the session is invalid (pause/replay the track to mint a fresh token), and a 502 means every source failed. `[ironbeat:relay] ... returned 403` / `failed` lines identify the host or provider that blocked the byte fetch.
+- `[ironbeat:stream] ... resolved in ...ms from X/Y providers` shows how many parallel provider lookups succeeded and how many media URLs were returned.
 - Verify the phone can reach the app origin itself (it loads the search results, so it usually can). The relay then performs the provider fetch server-side.
 
 ### Audio stops when the screen locks

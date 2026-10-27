@@ -1,22 +1,29 @@
 import { MusicServiceError } from "./types";
 
 const DEFAULT_PIPED_INSTANCES = [
-  "https://pipedapi.ducks.party",
   "https://api.piped.private.coffee",
+  "https://pipedapi.ducks.party",
   "https://pipedapi.kavin.rocks",
+  "https://pipedapi.leptons.xyz",
+  "https://pipedapi.nosebs.ru",
   "https://pipedapi.reallyaweso.me",
   "https://pipedapi.adminforge.de",
+  "https://api.piped.yt",
+  "https://pipedapi.drgns.space",
+  "https://pipedapi.owo.si",
+  "https://pipedapi-libre.kavin.rocks",
+  "https://piped-api.privacy.com.de",
+  "https://piped-api.codespace.cz",
+  "https://pipedapi.darkness.services",
+  "https://pipedapi.orangenet.cc",
 ];
 
 const DEFAULT_INVIDIOUS_INSTANCES = [
   "https://yt.chocolatemoo53.com",
-  "https://invidious.nerdvpn.de",
   "https://invidious.materialio.us",
-  "https://iv.melmac.space",
-  "https://invidious.jing.rocks",
-  "https://yewtu.be",
-  "https://invidious.privacyredirect.com",
-  "https://invidious.reallyaweso.me",
+  "https://invidious.nerdvpn.de",
+  "https://invidious.tiekoetter.com",
+  "https://inv.nadeko.net",
 ];
 
 export type HealthScope = "search" | "stream";

@@ -433,8 +433,22 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
   );
 
   const startLoadWatchdog = useCallback(
-    (token: number, attemptId = sourceAttemptRef.current) => {
+    (
+      token: number,
+      attemptId = sourceAttemptRef.current,
+      sourceUrl = "",
+    ) => {
       clearLoadWatchdog();
+
+      const isSameOriginRelay =
+        sourceUrl.startsWith("/api/") ||
+        (typeof window !== "undefined" &&
+          sourceUrl.startsWith(`${window.location.origin}/api/`));
+
+      // The relay may need to reach a provider and open the upstream stream
+      // before Safari sees metadata. Direct sources should start much faster.
+      const timeoutMs = isSameOriginRelay ? 30_000 : 8_000;
+
       loadWatchdogRef.current = window.setTimeout(() => {
         loadWatchdogRef.current = null;
         if (
@@ -463,7 +477,7 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
           "[ironbeat:player] Audio source stalled before it could play; requesting a fallback.",
         );
         sourceFailureRef.current();
-      }, 8_000);
+      }, timeoutMs);
     },
     [clearLoadWatchdog],
   );
@@ -491,7 +505,7 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
 
       if (autoplay) {
         void attemptPlay(token, attemptId);
-        startLoadWatchdog(token, attemptId);
+        startLoadWatchdog(token, attemptId, url);
       } else {
         setIsLoading(false);
       }

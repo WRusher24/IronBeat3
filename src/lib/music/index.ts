@@ -3,15 +3,18 @@ import type { Track } from "@/types";
 import { TtlCache } from "./cache";
 import {
   getCandidates,
+  INVIDIOUS_INSTANCES,
   markInstanceDown,
   markInstanceHealthy,
+  PIPED_INSTANCES,
 } from "./instances";
 import { resolveInvidiousStreams, searchInvidious } from "./invidious";
-import { resolvePipedStreams, searchPiped } from "./piped";
+import { resolvePipedStreams, searchPiped, sortStreamSources } from "./piped";
 import {
   MusicServiceError,
   type ResolvedStream,
   type SearchFilter,
+  type StreamSource,
 } from "./types";
 import { UpstreamError } from "./upstream";
 
@@ -104,9 +107,13 @@ export async function searchMusic(
 
 export async function resolveAudioStream(
   videoId: string,
-  options: { refresh?: boolean; provider?: "piped" | "invidious" } = {},
+  options: {
+    refresh?: boolean;
+    provider?: "piped" | "invidious";
+    includeDirect?: boolean;
+  } = {},
 ): Promise<ResolvedStream> {
-  const cacheKey = `${options.provider ?? "auto"}:${videoId}`;
+  const cacheKey = `${options.provider ?? "auto"}:${options.includeDirect ? "direct" : "local"}:${videoId}`;
 
   if (!options.refresh) {
     const cached = streamCache.get(cacheKey);
@@ -115,50 +122,94 @@ export async function resolveAudioStream(
     }
   }
 
+  const started = Date.now();
   const providers: Array<"piped" | "invidious"> = options.provider
     ? [options.provider]
     : ["invidious", "piped"];
 
-  const attempted = new Set<string>();
-  let lastError: unknown = null;
+  const attempts: Array<{
+    provider: "piped" | "invidious";
+    base: string;
+    promise: Promise<ResolvedStream>;
+  }> = [];
 
   for (const provider of providers) {
-    for (const base of getCandidates(provider, 3, "stream")) {
-      if (attempted.has(base)) {
-        continue;
-      }
-      attempted.add(base);
+    // Stream resolution deliberately ignores cooldowns: with so few healthy
+    // public instances, skipping the working one after a transient failure is
+    // worse than retrying it in parallel. Search uses cooldowns separately.
+    const bases =
+      provider === "invidious"
+        ? INVIDIOUS_INSTANCES.slice(0, options.includeDirect ? 3 : 5)
+        : PIPED_INSTANCES.slice(0, 5);
 
-      try {
-        const resolved =
+    for (const base of bases) {
+      attempts.push({
+        provider,
+        base,
+        promise:
           provider === "piped"
-            ? await resolvePipedStreams(base, videoId)
-            : await resolveInvidiousStreams(base, videoId);
+            ? resolvePipedStreams(base, videoId)
+            : resolveInvidiousStreams(base, videoId, {
+                includeDirect: options.includeDirect,
+              }),
+      });
+    }
+  }
 
-        markInstanceHealthy(base, "stream");
-        streamCache.set(cacheKey, resolved);
-        return resolved;
-      } catch (error) {
-        lastError = error;
-        console.warn(
-          `[ironbeat:stream] ${provider} ${base} failed for ${videoId}:`,
-          error instanceof Error ? error.message : error,
-        );
-        if (shouldCoolDown(error)) {
-          markInstanceDown(base, 90_000, "stream");
-        }
+  const settled = await Promise.allSettled(
+    attempts.map((attempt) => attempt.promise),
+  );
+  const successes: ResolvedStream[] = [];
+
+  settled.forEach((result, index) => {
+    const attempt = attempts[index];
+    if (result.status === "fulfilled") {
+      successes.push(result.value);
+      markInstanceHealthy(attempt.base, "stream");
+    } else {
+      console.warn(
+        `[ironbeat:stream] ${attempt.provider} ${attempt.base} failed for ${videoId}:`,
+        result.reason instanceof Error ? result.reason.message : result.reason,
+      );
+      if (shouldCoolDown(result.reason)) {
+        markInstanceDown(attempt.base, 60_000, "stream");
+      }
+    }
+  });
+
+  if (successes.length === 0) {
+    throw new MusicServiceError(
+      "No playable audio stream is available for this track right now.",
+      "unavailable",
+    );
+  }
+
+  const sourceMap = new Map<string, StreamSource>();
+  for (const stream of successes) {
+    for (const source of stream.sources) {
+      if (!sourceMap.has(source.url)) {
+        sourceMap.set(source.url, source);
       }
     }
   }
 
-  if (lastError instanceof MusicServiceError) {
-    throw lastError;
-  }
+  const sources = sortStreamSources([...sourceMap.values()]).slice(0, 16);
+  const primary = successes.find((stream) => stream.title) ?? successes[0];
+  const resolved: ResolvedStream = {
+    videoId,
+    sources,
+    title: primary.title,
+    artist: primary.artist,
+    duration: primary.duration,
+    provider: primary.provider,
+  };
 
-  throw new MusicServiceError(
-    "No playable audio stream is available for this track right now.",
-    "unavailable",
+  streamCache.set(cacheKey, resolved);
+  console.log(
+    `[ironbeat:stream] ${videoId} resolved in ${Date.now() - started}ms from ${successes.length}/${attempts.length} providers (${sources.length} media URLs)`,
   );
+
+  return resolved;
 }
 
 export { MusicServiceError } from "./types";

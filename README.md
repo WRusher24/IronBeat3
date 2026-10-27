@@ -60,13 +60,14 @@ Desktop browsers receive **direct audio URLs** from the API and send them to a n
 
 iPhone and iPad use the authenticated same-origin route `/api/audio/{videoId}/stream` instead. Mobile networks, content blockers, and iOS media handling can make third-party stream hosts unreachable or unreliable even when the API server can reach them. The relay:
 
-- resolves the same Piped/Invidious sources server-side and forwards the client's HTTP Range requests,
-- streams `audio/mp4` (or the upstream's media type) with correct range headers,
-- tries every upstream source, then retries through a fresh Piped resolution,
-- returns `no-store` bytes and never exposes provider URLs to the phone,
-- is time-boxed by `maxDuration = 300` on Vercel; if relayed playback fails, the player falls back to the direct sources.
+- resolves sources in parallel across the configured providers instead of waiting through them one by one,
+- prefers direct Invidious media URLs for the server-side fetch, where the Invidious proxy itself may be blocked from a datacenter IP,
+- embeds the chosen media URL inside the signed relay token, so every subsequent Range request streams immediately without resolving providers again,
+- stores resolved sources in the optional `stream_sources` Neon cache (15-minute TTL) for retries and other server instances,
+- forwards HTTP Range requests and returns `no-store` bytes without exposing provider URLs to the phone,
+- falls back to cached/proxied sources, then a fresh provider resolution, and is time-boxed by `maxDuration = 300` on Vercel.
 
-Both paths still feed a single native `<audio>` element, so iOS background playback, lock-screen controls, and seeking behave the same way. The client also has an 8-second stall watchdog and automatically switches sources.
+Both paths still feed a single native `<audio>` element, so iOS background playback, lock-screen controls, and seeking behave the same way. Direct sources use an 8-second stall watchdog; the relay gets 30 seconds, and the client automatically switches sources.
 
 Provider resolution is deliberately conservative:
 
@@ -201,6 +202,7 @@ See `.env.example` for the annotated list.
 | `favorites` | `user_id`, `video_id`, `title`, `artist`, `thumbnail`, `duration` | Unique per user/track. |
 | `search_history` | `user_id`, `query`, `created_at` | Powers quick-launch chips and Smart Shuffle. |
 | `track_plays` | `user_id`, `video_id`, … , `played_at` | Powers “Jump back in” and Smart Shuffle. |
+| `stream_sources` | `video_id` (primary key), `sources` (JSONB), `expires_at` | Optional shared cache of resolved media URLs for the relay; additive migration `0001`. |
 
 Every read and write is scoped by `user_id`. Playlist track endpoints verify playlist ownership before touching membership rows.
 

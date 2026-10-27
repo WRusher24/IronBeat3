@@ -118,70 +118,126 @@ export async function searchInvidious(
 export async function resolveInvidiousStreams(
   base: string,
   videoId: string,
+  options: { includeDirect?: boolean } = {},
 ): Promise<ResolvedStream> {
-  const url = new URL(`${base}/api/v1/videos/${videoId}`);
-  url.searchParams.set("local", "true");
+  const baseUrl = `${base}/api/v1/videos/${videoId}`;
+  const localUrl = `${baseUrl}?local=true`;
 
-  const payload = await fetchJson<InvidiousVideo>(url.toString(), 8_000);
+  const [localResult, directResult] = await Promise.allSettled([
+    fetchJson<InvidiousVideo>(localUrl, 6_000),
+    options.includeDirect
+      ? fetchJson<InvidiousVideo>(baseUrl, 6_000)
+      : Promise.resolve(null),
+  ]);
 
-  if (payload.error) {
-    const blocked = /login|bot|sign in|captcha/i.test(payload.error);
-    const unavailable =
-      /unavailable|does not exist|not found|private|removed|deleted|terminated/i.test(
+  const payloads: InvidiousVideo[] = [];
+  let lastError: unknown = null;
+
+  for (const result of [localResult, directResult]) {
+    if (result.status === "rejected") {
+      lastError = result.reason;
+      continue;
+    }
+
+    const payload = result.value;
+    if (!payload) {
+      continue;
+    }
+
+    if (payload.error) {
+      lastError = new MusicServiceError(
         payload.error,
+        /login|bot|sign in|captcha/i.test(payload.error)
+          ? "blocked"
+          : /unavailable|does not exist|not found|private|removed|deleted|terminated/i.test(
+                payload.error,
+              )
+            ? "no_audio"
+            : "unavailable",
       );
+      continue;
+    }
 
+    if (payload.videoId && payload.videoId !== videoId) {
+      lastError = new MusicServiceError(
+        "The audio provider returned the wrong video.",
+      );
+      continue;
+    }
+
+    if (payload.liveNow) {
+      lastError = new MusicServiceError(
+        "Live streams are not supported.",
+        "no_audio",
+      );
+      continue;
+    }
+
+    payloads.push(payload);
+  }
+
+  if (payloads.length === 0) {
+    if (lastError instanceof MusicServiceError) {
+      throw lastError;
+    }
     throw new MusicServiceError(
-      blocked ? "This instance is blocked by the source." : payload.error,
-      blocked ? "blocked" : unavailable ? "no_audio" : "unavailable",
+      "This instance could not resolve the track.",
+      "unavailable",
     );
   }
 
-  if (payload.videoId && payload.videoId !== videoId) {
-    throw new MusicServiceError("The audio provider returned the wrong video.");
-  }
-
-  if (payload.liveNow) {
-    throw new MusicServiceError("Live streams are not supported.", "no_audio");
-  }
-
   const sources: StreamSource[] = [];
+  const seenUrls = new Set<string>();
   const baseHost = hostOf(base);
 
-  for (const format of payload.adaptiveFormats ?? []) {
-    if (!format.url || !format.type || !isAudio(format.type)) {
-      continue;
+  for (const payload of payloads) {
+    for (const format of payload.adaptiveFormats ?? []) {
+      if (!format.url || !format.type || !isAudio(format.type)) {
+        continue;
+      }
+
+      const resolvedUrl = absoluteUrl(format.url, base);
+      if (seenUrls.has(resolvedUrl)) {
+        continue;
+      }
+      seenUrls.add(resolvedUrl);
+
+      sources.push({
+        url: resolvedUrl,
+        mimeType: containerOf(format.type),
+        bitrate: bitrateOf(format),
+        kind: "audio",
+        provider: "invidious",
+        label: format.audioQuality ?? `itag ${format.itag ?? "?"}`,
+        proxied: Boolean(
+          hostOf(resolvedUrl) && hostOf(resolvedUrl) === baseHost,
+        ),
+      });
     }
 
-    const resolvedUrl = absoluteUrl(format.url, base);
-    const proxied = Boolean(hostOf(resolvedUrl) && hostOf(resolvedUrl) === baseHost);
+    for (const format of payload.formatStreams ?? []) {
+      if (!format.url || !format.type || !isMuxedVideo(format.type)) {
+        continue;
+      }
 
-    sources.push({
-      url: resolvedUrl,
-      mimeType: containerOf(format.type),
-      bitrate: bitrateOf(format),
-      kind: "audio",
-      provider: "invidious",
-      label: format.audioQuality ?? `itag ${format.itag ?? "?"}`,
-      proxied,
-    });
-  }
+      const resolvedUrl = absoluteUrl(format.url, base);
+      if (seenUrls.has(resolvedUrl)) {
+        continue;
+      }
+      seenUrls.add(resolvedUrl);
 
-  for (const format of payload.formatStreams ?? []) {
-    if (!format.url || !format.type || !isMuxedVideo(format.type)) {
-      continue;
+      sources.push({
+        url: resolvedUrl,
+        mimeType: containerOf(format.type),
+        bitrate: bitrateOf(format),
+        kind: "muxed",
+        provider: "invidious",
+        label: format.qualityLabel ?? "muxed",
+        proxied: Boolean(
+          hostOf(resolvedUrl) && hostOf(resolvedUrl) === baseHost,
+        ),
+      });
     }
-
-    const resolvedUrl = absoluteUrl(format.url, base);
-    sources.push({
-      url: resolvedUrl,
-      mimeType: containerOf(format.type),
-      bitrate: bitrateOf(format),
-      kind: "muxed",
-      provider: "invidious",
-      label: format.qualityLabel ?? "muxed",
-      proxied: Boolean(hostOf(resolvedUrl) && hostOf(resolvedUrl) === baseHost),
-    });
   }
 
   if (sources.length === 0) {
@@ -191,12 +247,14 @@ export async function resolveInvidiousStreams(
     );
   }
 
+  const primary = payloads[0];
+
   return {
     videoId,
-    sources: sortStreamSources(sources).slice(0, 8),
-    title: payload.title,
-    artist: payload.author,
-    duration: payload.lengthSeconds,
+    sources: sortStreamSources(sources).slice(0, 12),
+    title: primary.title,
+    artist: primary.author,
+    duration: primary.lengthSeconds,
     provider: "invidious",
   };
 }

@@ -1,12 +1,15 @@
 import {
   index,
   integer,
+  jsonb,
   pgTable,
   text,
   timestamp,
   uniqueIndex,
   uuid,
 } from "drizzle-orm/pg-core";
+
+import type { StreamSource } from "@/lib/music/types";
 
 export const users = pgTable(
   "users",
@@ -128,4 +131,20 @@ export const trackPlays = pgTable(
       .defaultNow(),
   },
   (table) => [index("track_plays_user_time_idx").on(table.userId, table.playedAt)],
+);
+
+export const streamSources = pgTable(
+  "stream_sources",
+  {
+    videoId: text("video_id").primaryKey(),
+    sources: jsonb("sources").$type<StreamSource[]>().notNull(),
+    title: text("title"),
+    artist: text("artist"),
+    duration: integer("duration"),
+    expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+    updatedAt: timestamp("updated_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (table) => [index("stream_sources_expiry_idx").on(table.expiresAt)],
 );

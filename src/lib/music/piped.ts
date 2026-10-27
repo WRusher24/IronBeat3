@@ -161,7 +161,7 @@ export async function resolvePipedStreams(
 ): Promise<ResolvedStream> {
   const payload = await fetchJson<PipedStreamsResponse>(
     `${base}/streams/${videoId}`,
-    8_000,
+    6_000,
   );
 
   if (payload.error || payload.message) {

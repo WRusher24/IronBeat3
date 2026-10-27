@@ -4,7 +4,10 @@ import { getSessionClaims } from "@/lib/auth-server";
 import { jsonError, unauthorized } from "@/lib/http";
 import { MusicServiceError, resolveAudioStream } from "@/lib/music";
 import { USER_AGENT } from "@/lib/music/upstream";
+import type { StreamSource } from "@/lib/music/types";
+import { orderRelaySources } from "@/lib/relay-sources";
 import { verifyStreamToken } from "@/lib/session";
+import { readStreamCache, writeStreamCache } from "@/lib/stream-cache";
 import { isVideoId } from "@/lib/tracks";
 
 export const dynamic = "force-dynamic";
@@ -17,8 +20,11 @@ type RouteContext = {
 
 type OpenStream = {
   upstream: Response;
-  source: Awaited<ReturnType<typeof resolveAudioStream>>["sources"][number];
+  source: StreamSource;
 };
+
+const RELAY_DEADLINE_MS = 22_000;
+const SOURCE_TIMEOUT_MS = 7_000;
 
 const FORWARDED_RESPONSE_HEADERS = [
   "content-type",
@@ -29,13 +35,42 @@ const FORWARDED_RESPONSE_HEADERS = [
   "last-modified",
 ];
 
+function hostOf(url: string): string {
+  try {
+    return new URL(url).host;
+  } catch {
+    return "invalid-host";
+  }
+}
+
+function sourceFromToken(url: string): StreamSource {
+  return {
+    url,
+    mimeType: "audio/mp4",
+    bitrate: 0,
+    kind: "audio",
+    provider: "invidious",
+    label: "relay token",
+    proxied: false,
+  };
+}
+
 async function trySources(
-  sources: OpenStream["source"][],
+  sources: StreamSource[],
   range: string | null,
+  deadline: number,
 ): Promise<OpenStream | null> {
   for (const source of sources) {
+    const remaining = deadline - Date.now();
+    if (remaining < 500) {
+      break;
+    }
+
     const controller = new AbortController();
-    const headerTimer = setTimeout(() => controller.abort(), 12_000);
+    const headerTimer = setTimeout(
+      () => controller.abort(),
+      Math.min(SOURCE_TIMEOUT_MS, remaining),
+    );
 
     try {
       const upstream = await fetch(source.url, {
@@ -56,9 +91,17 @@ async function trySources(
         return { upstream, source };
       }
 
+      const status = upstream.status;
       await upstream.body?.cancel().catch(() => {});
-    } catch {
+      console.warn(
+        `[ironbeat:relay] ${source.provider} ${source.proxied ? "proxy" : "direct"} ${hostOf(source.url)} returned ${status}`,
+      );
+    } catch (error) {
       clearTimeout(headerTimer);
+      console.warn(
+        `[ironbeat:relay] ${source.provider} ${source.proxied ? "proxy" : "direct"} ${hostOf(source.url)} failed:`,
+        error instanceof Error ? error.message : error,
+      );
     }
   }
 
@@ -68,32 +111,76 @@ async function trySources(
 async function openUpstream(
   videoId: string,
   range: string | null,
+  tokenSourceUrl: string | null,
 ): Promise<OpenStream | null> {
-  try {
-    const primary = await resolveAudioStream(videoId);
-    const primaryResult = await trySources(primary.sources, range);
-    if (primaryResult) {
-      return primaryResult;
+  const deadline = Date.now() + RELAY_DEADLINE_MS;
+
+  // The signed relay URL normally carries the best resolved media URL. This is
+  // the fast path for every Range request and avoids another provider lookup.
+  if (tokenSourceUrl) {
+    const opened = await trySources(
+      [sourceFromToken(tokenSourceUrl)],
+      range,
+      deadline,
+    );
+    if (opened) {
+      return opened;
     }
-  } catch {
-    // Fall through to the Piped-backed resolution.
+  }
+
+  const cached = await readStreamCache(videoId);
+  let resolved = cached;
+  let wasFresh = false;
+
+  if (!resolved) {
+    try {
+      resolved = await resolveAudioStream(videoId, { includeDirect: true });
+      wasFresh = true;
+      await writeStreamCache(resolved);
+    } catch (error) {
+      console.warn(
+        `[ironbeat:relay] no sources for ${videoId}:`,
+        error instanceof Error ? error.message : error,
+      );
+      return null;
+    }
+  }
+
+  const cachedSources = orderRelaySources(resolved.sources).filter(
+    (source) => source.url !== tokenSourceUrl,
+  );
+  const opened = await trySources(cachedSources, range, deadline);
+  if (opened) {
+    return opened;
+  }
+
+  if (wasFresh || Date.now() > deadline - 5_000) {
+    return null;
   }
 
   try {
-    const fallback = await resolveAudioStream(videoId, {
+    const fresh = await resolveAudioStream(videoId, {
       refresh: true,
-      provider: "piped",
+      includeDirect: true,
     });
-    return await trySources(fallback.sources, range);
-  } catch {
+    await writeStreamCache(fresh);
+    return await trySources(
+      orderRelaySources(fresh.sources).filter(
+        (source) => source.url !== tokenSourceUrl,
+      ),
+      range,
+      deadline,
+    );
+  } catch (error) {
+    console.warn(
+      `[ironbeat:relay] refresh failed for ${videoId}:`,
+      error instanceof Error ? error.message : error,
+    );
     return null;
   }
 }
 
-function responseHeaders(
-  upstream: Response,
-  source: OpenStream["source"],
-): Headers {
+function responseHeaders(upstream: Response, source: StreamSource): Headers {
   const headers = new Headers();
 
   for (const name of FORWARDED_RESPONSE_HEADERS) {
@@ -119,28 +206,31 @@ async function authorize(
   request: NextRequest,
   context: RouteContext,
 ): Promise<
-  | { videoId: string; error: null }
-  | { videoId: null; error: Response }
+  | { videoId: string; sourceUrl: string | null; error: null }
+  | { videoId: null; sourceUrl: null; error: Response }
 > {
   const { videoId } = await context.params;
   if (!isVideoId(videoId)) {
     return {
       videoId: null,
+      sourceUrl: null,
       error: jsonError("That track id is not valid.", 422),
     };
   }
 
   const token = request.nextUrl.searchParams.get("token");
-  const tokenValid = await verifyStreamToken(token, videoId);
+  const payload = await verifyStreamToken(token, videoId);
 
-  if (!tokenValid) {
-    const claims = await getSessionClaims();
-    if (!claims) {
-      return { videoId: null, error: unauthorized() };
-    }
+  if (payload) {
+    return { videoId, sourceUrl: payload.sourceUrl, error: null };
   }
 
-  return { videoId, error: null };
+  const claims = await getSessionClaims();
+  if (!claims) {
+    return { videoId: null, sourceUrl: null, error: unauthorized() };
+  }
+
+  return { videoId, sourceUrl: null, error: null };
 }
 
 export async function GET(request: NextRequest, context: RouteContext) {
@@ -153,6 +243,7 @@ export async function GET(request: NextRequest, context: RouteContext) {
     const opened = await openUpstream(
       auth.videoId,
       request.headers.get("range"),
+      auth.sourceUrl,
     );
 
     if (!opened) {
@@ -185,7 +276,7 @@ export async function HEAD(request: NextRequest, context: RouteContext) {
   }
 
   try {
-    const opened = await openUpstream(auth.videoId, "bytes=0-0");
+    const opened = await openUpstream(auth.videoId, "bytes=0-0", auth.sourceUrl);
 
     if (!opened) {
       return new Response(null, { status: 502 });
@@ -197,7 +288,6 @@ export async function HEAD(request: NextRequest, context: RouteContext) {
 
     await opened.upstream.body?.cancel().catch(() => {});
 
-    // Present HEAD like a normal media probe: full length, no partial range.
     headers.delete("content-length");
     headers.delete("content-range");
     if (totalBytes && /^\d+$/.test(totalBytes)) {

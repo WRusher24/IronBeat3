@@ -88,8 +88,20 @@ export const sessionCookieOptions = {
 
 const STREAM_TOKEN_AUDIENCE = "ironbeat-audio-relay";
 
-export async function createStreamToken(videoId: string): Promise<string> {
-  return new SignJWT({ scope: "audio" })
+export type StreamTokenPayload = {
+  sourceUrl: string | null;
+};
+
+export async function createStreamToken(
+  videoId: string,
+  sourceUrl?: string | null,
+): Promise<string> {
+  const claims: Record<string, string> = { scope: "audio" };
+  if (sourceUrl) {
+    claims.src = sourceUrl;
+  }
+
+  return new SignJWT(claims)
     .setProtectedHeader({ alg: "HS256", typ: "JWT" })
     .setSubject(videoId)
     .setAudience(STREAM_TOKEN_AUDIENCE)
@@ -101,9 +113,9 @@ export async function createStreamToken(videoId: string): Promise<string> {
 export async function verifyStreamToken(
   token: string | null | undefined,
   videoId: string,
-): Promise<boolean> {
+): Promise<StreamTokenPayload | null> {
   if (!token) {
-    return false;
+    return null;
   }
 
   try {
@@ -112,8 +124,17 @@ export async function verifyStreamToken(
       audience: STREAM_TOKEN_AUDIENCE,
     });
 
-    return payload.sub === videoId;
+    if (payload.sub !== videoId) {
+      return null;
+    }
+
+    return {
+      sourceUrl:
+        typeof payload.src === "string" && /^https?:\/\//i.test(payload.src)
+          ? payload.src
+          : null,
+    };
   } catch {
-    return false;
+    return null;
   }
 }

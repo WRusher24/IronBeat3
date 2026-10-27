@@ -10,7 +10,9 @@ import {
 } from "@/lib/http";
 import { MusicServiceError, resolveAudioStream } from "@/lib/music";
 import { checkRateLimit } from "@/lib/rate-limit";
+import { orderRelaySources } from "@/lib/relay-sources";
 import { createStreamToken } from "@/lib/session";
+import { readStreamCache, writeStreamCache } from "@/lib/stream-cache";
 import { isVideoId } from "@/lib/tracks";
 
 export const dynamic = "force-dynamic";
@@ -41,15 +43,20 @@ export async function GET(request: NextRequest, context: RouteContext) {
     const provider =
       providerParam === "piped" || providerParam === "invidious"
         ? providerParam
-        : refresh
-          ? "piped"
-          : undefined;
+        : undefined;
 
     try {
-      const resolved = await resolveAudioStream(videoId, {
-        refresh,
-        provider,
-      });
+      const forceRefresh = refresh || Boolean(provider);
+      let resolved = forceRefresh ? null : await readStreamCache(videoId);
+
+      if (!resolved) {
+        resolved = await resolveAudioStream(videoId, {
+          refresh: forceRefresh,
+          provider,
+          includeDirect: true,
+        });
+        await writeStreamCache(resolved);
+      }
 
       const sources = resolved.sources
         .filter((source) => /^https?:\/\//i.test(source.url))
@@ -69,12 +76,19 @@ export async function GET(request: NextRequest, context: RouteContext) {
         );
       }
 
-      const proxyToken = await createStreamToken(videoId);
+      // Put the best relay source inside the signed token. Subsequent range
+      // requests then stream immediately instead of re-resolving providers.
+      const bestRelaySource = orderRelaySources(resolved.sources)[0];
+      const proxyToken = await createStreamToken(
+        videoId,
+        bestRelaySource?.url ?? null,
+      );
+      const proxyUrl = `/api/audio/${videoId}/stream?token=${encodeURIComponent(proxyToken)}`;
 
       return json({
         videoId,
         sources,
-        proxyUrl: `/api/audio/${videoId}/stream?token=${encodeURIComponent(proxyToken)}`,
+        proxyUrl,
         title: resolved.title ?? null,
         artist: resolved.artist ?? null,
         duration: resolved.duration ?? null,
