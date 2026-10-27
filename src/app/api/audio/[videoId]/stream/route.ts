@@ -3,6 +3,7 @@ import type { NextRequest } from "next/server";
 import { getSessionClaims } from "@/lib/auth-server";
 import { jsonError, unauthorized } from "@/lib/http";
 import { MusicServiceError, resolveAudioStream } from "@/lib/music";
+import { INVIDIOUS_INSTANCES } from "@/lib/music/instances";
 import { USER_AGENT } from "@/lib/music/upstream";
 import type { StreamSource } from "@/lib/music/types";
 import { orderRelaySources } from "@/lib/relay-sources";
@@ -35,6 +36,8 @@ const FORWARDED_RESPONSE_HEADERS = [
   "last-modified",
 ];
 
+const loggedRelaySources = new Set<string>();
+
 function hostOf(url: string): string {
   try {
     return new URL(url).host;
@@ -53,6 +56,32 @@ function sourceFromToken(url: string): StreamSource {
     label: "relay token",
     proxied: false,
   };
+}
+
+function latestVersionSource(base: string, videoId: string): StreamSource {
+  return {
+    url: `${base}/latest_version?id=${videoId}&itag=140&local=true`,
+    mimeType: "audio/mp4",
+    bitrate: 128_000,
+    kind: "audio",
+    provider: "invidious",
+    label: "latest_version 140",
+    proxied: true,
+  };
+}
+
+function relayCandidates(
+  resolved: Awaited<ReturnType<typeof resolveAudioStream>>,
+  videoId: string,
+  tokenSourceUrl: string | null,
+): StreamSource[] {
+  const extras = INVIDIOUS_INSTANCES.slice(0, 4)
+    .map((base) => latestVersionSource(base, videoId))
+    .filter((source) => source.url !== tokenSourceUrl);
+
+  return orderRelaySources([...resolved.sources, ...extras]).filter(
+    (source) => source.url !== tokenSourceUrl,
+  );
 }
 
 async function trySources(
@@ -88,6 +117,13 @@ async function trySources(
       clearTimeout(headerTimer);
 
       if (upstream.ok || upstream.status === 206) {
+        const sourceKey = `${source.provider}:${source.proxied ? "proxy" : "direct"}:${hostOf(source.url)}`;
+
+        if (!loggedRelaySources.has(sourceKey)) {
+          loggedRelaySources.add(sourceKey);
+          console.log(`[ironbeat:relay] streaming via ${sourceKey}`);
+        }
+
         return { upstream, source };
       }
 
@@ -146,10 +182,11 @@ async function openUpstream(
     }
   }
 
-  const cachedSources = orderRelaySources(resolved.sources).filter(
-    (source) => source.url !== tokenSourceUrl,
+  const opened = await trySources(
+    relayCandidates(resolved, videoId, tokenSourceUrl),
+    range,
+    deadline,
   );
-  const opened = await trySources(cachedSources, range, deadline);
   if (opened) {
     return opened;
   }
@@ -165,9 +202,7 @@ async function openUpstream(
     });
     await writeStreamCache(fresh);
     return await trySources(
-      orderRelaySources(fresh.sources).filter(
-        (source) => source.url !== tokenSourceUrl,
-      ),
+      relayCandidates(fresh, videoId, tokenSourceUrl),
       range,
       deadline,
     );

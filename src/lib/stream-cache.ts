@@ -15,9 +15,18 @@ function cacheIsAvailable(): boolean {
 
 function disableCache(error: unknown): void {
   cacheDisabledUntil = Date.now() + RETRY_AFTER_FAILURE_MS;
+  const message = error instanceof Error ? error.message : String(error);
+
+  if (/stream_sources.*does not exist|relation .*stream_sources/i.test(message)) {
+    console.warn(
+      "[ironbeat:stream-cache] stream_sources table is missing. Run `npm run db:migrate`. Playback continues without the shared cache.",
+    );
+    return;
+  }
+
   console.warn(
     "[ironbeat:stream-cache] Cache unavailable; resolving every request:",
-    error instanceof Error ? error.message : error,
+    message,
   );
 }
 

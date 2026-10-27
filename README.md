@@ -61,7 +61,7 @@ Desktop browsers receive **direct audio URLs** from the API and send them to a n
 iPhone and iPad use the authenticated same-origin route `/api/audio/{videoId}/stream` instead. Mobile networks, content blockers, and iOS media handling can make third-party stream hosts unreachable or unreliable even when the API server can reach them. The relay:
 
 - resolves sources in parallel across the configured providers instead of waiting through them one by one,
-- prefers direct Invidious media URLs for the server-side fetch, where the Invidious proxy itself may be blocked from a datacenter IP,
+- prefers Invidious/Piped proxy URLs for the server-side fetch, because YouTube frequently returns 403 for direct googlevideo requests from Vercel’s datacenter IPs,
 - embeds the chosen media URL inside the signed relay token, so every subsequent Range request streams immediately without resolving providers again,
 - stores resolved sources in the optional `stream_sources` Neon cache (15-minute TTL) for retries and other server instances,
 - forwards HTTP Range requests and returns `no-store` bytes without exposing provider URLs to the phone,

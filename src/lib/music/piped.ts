@@ -68,7 +68,15 @@ function isPlayableMuxedContainer(mimeType: string): boolean {
 function isProxied(url: string, base: string): boolean {
   const host = hostOf(url);
   const baseHost = hostOf(base);
-  return Boolean(host && baseHost && host === baseHost);
+  if (!host || !baseHost) {
+    return false;
+  }
+  if (host === baseHost) {
+    return true;
+  }
+
+  const baseDomain = baseHost.split(".").slice(-2).join(".");
+  return host.endsWith(`.${baseDomain}`);
 }
 
 function sourceRank(source: StreamSource): number {

@@ -20,29 +20,34 @@ function relayRank(source: StreamSource): number {
   const container = containerOf(source.mimeType);
   const isAac = container !== "video/mp4";
 
-  if (!source.proxied && source.kind === "audio" && isAac) {
+  // `/latest_version` redirects through a separate Invidious companion proxy
+  // host, so it is tried before the primary API media URLs.
+  if (source.proxied && source.label.startsWith("latest_version")) {
+    return -1;
+  }
+
+  // The relay runs on Vercel. Direct googlevideo fetches from that egress IP
+  // are frequently rejected with 403. Source URLs served by the Invidious or
+  // Piped proxy are fetched from a non-YouTube host and are the reliable path.
+  if (source.proxied && source.kind === "audio" && isAac) {
     return 0;
   }
-  if (!source.proxied && source.kind === "audio") {
+  if (source.proxied && source.kind === "muxed") {
     return 1;
   }
-  if (!source.proxied && source.kind === "muxed") {
+  if (!source.proxied && source.kind === "audio" && isAac) {
     return 2;
   }
-  if (source.proxied && source.kind === "audio" && isAac) {
+  if (!source.proxied && source.kind === "muxed") {
     return 3;
   }
-  if (source.proxied && source.kind === "muxed") {
-    return 4;
-  }
-  return 5;
+  return 4;
 }
 
 /**
- * Server-side relay sources are fetched by Vercel, not the phone. Direct
- * googlevideo URLs are preferred there because the Invidious proxy itself can
- * be blocked from datacenter IPs. WebM/Opus is removed because Safari cannot
- * decode it.
+ * Server-side relay sources are fetched by Vercel, not the phone. Proxied
+ * AAC/MP4 URLs are preferred because YouTube blocks direct media fetches from
+ * datacenter IPs. WebM/Opus is removed because Safari cannot decode it.
  */
 export function orderRelaySources(sources: StreamSource[]): StreamSource[] {
   return sources

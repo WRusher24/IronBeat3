@@ -308,7 +308,7 @@ Mobile browsers can block media started after an asynchronous fetch. IronBeat un
 
 ### iPhone shows results but audio never starts
 
-- Confirm the app is version **1.1.1 or newer** in Settings. Settings also shows **iOS relay** when the iPhone is using the same-origin audio route.
+- Confirm the app is version **1.1.2 or newer** in Settings. Settings also shows **iOS relay** when the iPhone is using the same-origin audio route.
 - The first playback requires a tap. If you see **Tap play to start audio**, tap it once.
 - Close and reopen the home-screen app, or remove/re-add it so the updated service worker and bundle load.
 - If it still fails, the relay may be returning an error. Check Vercel function logs for `/api/audio/.../stream`; a 401 means the signed relay token expired or the session is invalid (pause/replay the track to mint a fresh token), and a 502 means every source failed. `[ironbeat:relay] ... returned 403` / `failed` lines identify the host or provider that blocked the byte fetch.

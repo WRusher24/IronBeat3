@@ -247,7 +247,25 @@ export async function resolveInvidiousStreams(
     );
   }
 
+  // A second, independent Invidious media endpoint. It redirects to the
+  // instance's companion proxy host and is often reachable when the primary
+  // API media URLs are blocked from datacenter IPs.
+  sources.push({
+    url: `${base}/latest_version?id=${videoId}&itag=140&local=true`,
+    mimeType: "audio/mp4",
+    bitrate: 128_000,
+    kind: "audio",
+    provider: "invidious",
+    label: "latest_version 140",
+    proxied: true,
+  });
+
   const primary = payloads[0];
+  const proxiedCount = sources.filter((source) => source.proxied).length;
+
+  console.log(
+    `[ironbeat:stream] invidious ${base} local=${localResult.status === "fulfilled"} direct=${directResult.status === "fulfilled"} proxied=${proxiedCount} total=${sources.length}`,
+  );
 
   return {
     videoId,

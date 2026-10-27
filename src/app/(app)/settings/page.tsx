@@ -334,7 +334,7 @@ export default function SettingsPage() {
 
           <div className="flex items-center justify-between border-t border-border pt-3">
             <span className="text-[10px] uppercase tracking-[0.14em] text-faint">
-              IronBeat v1.1.1 · {relayEnabled ? "iOS relay" : "direct stream"}
+              IronBeat v1.1.2 · {relayEnabled ? "iOS relay" : "direct stream"}
             </span>
             <a
               href="https://github.com/WRusher24/IronBeat3"
