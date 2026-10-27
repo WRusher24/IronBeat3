@@ -16,7 +16,7 @@ Built from the ground up with **Next.js 16 (App Router)**, **React 19**, **Tailw
 | Quick launch | Horizontal chips of recent successful searches, with starter suggestions for new accounts. |
 | Vibe deck | All eight mood cards on Home — no “All Moods” submenu. Each card launches a dynamic search and autoplays. |
 | Playback | One global `<audio>` element, gapless queue advancing, shuffle, repeat off/all/one, seek, resume position, queue persistence. |
-| iOS audio | `navigator.audioSession.type = "playback"`, Media Session metadata/artwork, play/pause/previous/next/seek handlers, silent-gesture unlock, “Tap play” fallback when autoplay is blocked. |
+| iOS audio | `navigator.audioSession.type = "playback"`, Media Session metadata/artwork, play/pause/previous/next/seek handlers, unmuted gesture unlock, authenticated same-origin audio relay, “Tap play” fallback when autoplay is blocked. |
 | Library | Create/rename/delete playlists, add tracks from search, remove tracks, play or shuffle a folder, favorites, recent plays. |
 | Smart Shuffle | A fresh mix derived from your most-used search queries, favorite artists, and recent plays. |
 | PWA | Web App Manifest, maskable icons, 180px Apple touch icon, standalone metadata, offline fallback, service worker (production only). |
@@ -41,6 +41,7 @@ iPhone / mobile browser
 │  ├─ /api/auth/*             bcrypt passwords + JWT session cookie
 │  ├─ /api/music/search       Piped search → Invidious fallback, TTL cache
 │  ├─ /api/audio/[videoId]    Piped/Invidious stream resolution (AAC/MP4 first)
+│  ├─ /api/audio/[videoId]/stream   Same-origin relay used by iOS Safari
 │  ├─ /api/playlists/*        CRUD + track membership, ownership enforced
 │  ├─ /api/favorites          Per-user favorites
 │  ├─ /api/plays              Recent play history
@@ -53,9 +54,19 @@ iPhone / mobile browser
    └─ Piped / Invidious community instances → direct HTTPS audio streams
 ```
 
-### Why there is no audio proxy
+### Direct streams on desktop, same-origin relay on iOS
 
-The browser receives **direct audio URLs** from the API and sends them to a native `<audio>` element. This matches iOS expectations for active media, avoids serverless execution limits during hour-long mixes, keeps byte-range seeking between the device and the media host, and lets the OS own background playback and lock-screen controls.
+Desktop browsers receive **direct audio URLs** from the API and send them to a native `<audio>` element. This keeps byte-range seeking between the device and the media host and avoids serverless execution limits during hour-long mixes.
+
+iPhone and iPad use the authenticated same-origin route `/api/audio/{videoId}/stream` instead. Mobile networks, content blockers, and iOS media handling can make third-party stream hosts unreachable or unreliable even when the API server can reach them. The relay:
+
+- resolves the same Piped/Invidious sources server-side and forwards the client's HTTP Range requests,
+- streams `audio/mp4` (or the upstream's media type) with correct range headers,
+- tries every upstream source, then retries through a fresh Piped resolution,
+- returns `no-store` bytes and never exposes provider URLs to the phone,
+- is time-boxed by `maxDuration = 300` on Vercel; if relayed playback fails, the player falls back to the direct sources.
+
+Both paths still feed a single native `<audio>` element, so iOS background playback, lock-screen controls, and seeking behave the same way. The client also has an 8-second stall watchdog and automatically switches sources.
 
 Provider resolution is deliberately conservative:
 

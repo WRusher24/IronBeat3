@@ -23,6 +23,7 @@ import { useToast } from "@/components/ui/toast";
 import { apiFetch, ApiError, errorMessage } from "@/lib/client-api";
 import { cn } from "@/lib/cn";
 import { initialsFor } from "@/lib/format";
+import { prefersSameOriginAudioRelay } from "@/lib/platform";
 import { THEMES } from "@/lib/theme";
 import type { PublicUser } from "@/types";
 
@@ -37,6 +38,11 @@ export default function SettingsPage() {
   const [signingOut, setSigningOut] = useState(false);
   const [clearSheetOpen, setClearSheetOpen] = useState(false);
   const [clearingHistory, setClearingHistory] = useState(false);
+  const [relayEnabled, setRelayEnabled] = useState(false);
+
+  useEffect(() => {
+    setRelayEnabled(prefersSameOriginAudioRelay());
+  }, []);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -328,7 +334,7 @@ export default function SettingsPage() {
 
           <div className="flex items-center justify-between border-t border-border pt-3">
             <span className="text-[10px] uppercase tracking-[0.14em] text-faint">
-              IronBeat v1.0.0
+              IronBeat v1.1.0 · {relayEnabled ? "iOS relay" : "direct stream"}
             </span>
             <a
               href="https://github.com/WRusher24/IronBeat3"

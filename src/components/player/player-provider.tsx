@@ -12,6 +12,7 @@ import {
 } from "react";
 
 import { apiFetch } from "@/lib/client-api";
+import { prefersSameOriginAudioRelay } from "@/lib/platform";
 import { isTrackLike, shuffleTracks } from "@/lib/tracks";
 import type { Track } from "@/types";
 
@@ -29,10 +30,15 @@ type AudioSourcesResponse = {
     mimeType: string;
     kind: string;
   }>;
+  proxyUrl?: string | null;
 };
 
-type SourceCacheEntry = {
+type ResolvedSourceUrls = {
   urls: string[];
+  proxyUrl: string | null;
+};
+
+type SourceCacheEntry = ResolvedSourceUrls & {
   expiresAt: number;
 };
 
@@ -186,7 +192,7 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
   const lastPositionUpdateRef = useRef(0);
   const playAttemptTimerRef = useRef<number | null>(null);
   const loadWatchdogRef = useRef<number | null>(null);
-  const sourceFailureRef = useRef<(stalled?: boolean) => void>(() => {});
+  const sourceFailureRef = useRef<() => void>(() => {});
   const lastFailureAtRef = useRef(0);
 
   const applyQueue = useCallback((next: Track[]) => {
@@ -302,10 +308,10 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const fetchSources = useCallback(
-    async (track: Track, refresh: boolean): Promise<string[]> => {
+    async (track: Track, refresh: boolean): Promise<ResolvedSourceUrls> => {
       const cached = sourceCacheRef.current.get(track.videoId);
       if (!refresh && cached && cached.expiresAt > Date.now()) {
-        return cached.urls;
+        return { urls: cached.urls, proxyUrl: cached.proxyUrl };
       }
 
       const controller = new AbortController();
@@ -321,9 +327,21 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
         window.clearTimeout(requestTimer);
       }
 
-      const urls = payload.sources
+      const directUrls = payload.sources
         .map((source) => source.url)
         .filter((url) => typeof url === "string" && /^https?:\/\//i.test(url));
+
+      const proxyUrl =
+        typeof payload.proxyUrl === "string" &&
+        payload.proxyUrl.startsWith("/api/")
+          ? payload.proxyUrl
+          : null;
+
+      const urls = proxyUrl
+        ? prefersSameOriginAudioRelay()
+          ? [proxyUrl, ...directUrls]
+          : [...directUrls, proxyUrl]
+        : directUrls;
 
       if (urls.length === 0) {
         throw new Error("No audio sources returned for this track.");
@@ -331,10 +349,11 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
 
       sourceCacheRef.current.set(track.videoId, {
         urls,
+        proxyUrl,
         expiresAt: Date.now() + SOURCE_CACHE_MS,
       });
 
-      return urls;
+      return { urls, proxyUrl };
     },
     [],
   );
@@ -443,8 +462,8 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
         console.warn(
           "[ironbeat:player] Audio source stalled before it could play; requesting a fallback.",
         );
-        sourceFailureRef.current(true);
-      }, 12_000);
+        sourceFailureRef.current();
+      }, 8_000);
     },
     [clearLoadWatchdog],
   );
@@ -513,14 +532,14 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
       sourceIndexRef.current = 0;
 
       try {
-        const urls = await fetchSources(track, false);
+        const resolved = await fetchSources(track, false);
         if (token !== loadTokenRef.current) {
           return;
         }
 
-        sourceUrlsRef.current = urls;
+        sourceUrlsRef.current = resolved.urls;
         sourceIndexRef.current = 0;
-        applySource(urls[0]!, position, autoplay, token);
+        applySource(resolved.urls[0]!, position, autoplay, token);
       } catch {
         if (token !== loadTokenRef.current) {
           return;
@@ -642,8 +661,7 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
     [applyPlaying, setActiveIndex],
   );
 
-  const handleSourceFailure = useCallback(
-    (stalled = false) => {
+  const handleSourceFailure = useCallback(() => {
       if (indexRef.current < 0) {
         return;
       }
@@ -673,12 +691,6 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
       applyPlaying(false);
       setIsLoading(false);
 
-      // A source that never buffers is unlikely to recover; skip the remaining
-      // formats on that host and ask for a fresh provider resolution.
-      if (stalled) {
-        sourceIndexRef.current = sourceUrlsRef.current.length;
-      }
-
       const nextSourceIndex = sourceIndexRef.current + 1;
       if (nextSourceIndex < sourceUrlsRef.current.length) {
         sourceIndexRef.current = nextSourceIndex;
@@ -702,14 +714,14 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
         setError("Reconnecting audio…");
 
         void fetchSources(track, true)
-          .then((urls) => {
+          .then((resolved) => {
             if (token !== loadTokenRef.current) {
               return;
             }
-            sourceUrlsRef.current = urls;
+            sourceUrlsRef.current = resolved.urls;
             sourceIndexRef.current = 0;
             applySource(
-              urls[0]!,
+              resolved.urls[0]!,
               timeRef.current,
               desiredPlayRef.current,
               token,
@@ -754,8 +766,7 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
       clearPlaybackTimers,
       fetchSources,
       goNext,
-    ],
-  );
+    ]);
 
   useEffect(() => {
     sourceFailureRef.current = handleSourceFailure;
@@ -1224,6 +1235,14 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
 
     let unlocked = false;
     let unlocking = false;
+    let unlockTimer: number | null = null;
+
+    function clearUnlockTimer() {
+      if (unlockTimer !== null) {
+        window.clearTimeout(unlockTimer);
+        unlockTimer = null;
+      }
+    }
 
     function unlock() {
       if (unlocked || unlocking) {
@@ -1241,6 +1260,13 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
       }
 
       unlocking = true;
+      clearUnlockTimer();
+      unlockTimer = window.setTimeout(() => {
+        if (!unlocked) {
+          unlocking = false;
+        }
+      }, 1_500);
+
       // The clip is silent PCM, so play it UNMUTED. iOS Safari only grants
       // long-lived media activation for audible playback initiated directly by
       // a gesture; a muted clip does not unlock the element for later
@@ -1254,6 +1280,7 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
         .then(() => {
           unlocked = true;
           unlocking = false;
+          clearUnlockTimer();
           detach();
 
           if (indexRef.current >= 0) {
@@ -1269,19 +1296,40 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
         })
         .catch(() => {
           unlocking = false;
+          clearUnlockTimer();
           // Keep the listeners installed so the next gesture can retry.
         });
     }
 
-    function detach() {
-      window.removeEventListener("pointerdown", unlock);
-      window.removeEventListener("touchend", unlock);
-      window.removeEventListener("keydown", unlock);
+    function handlePointerDown(event: PointerEvent) {
+      // Touch events are handled by touchend, which is the most reliable
+      // activation point in iOS Safari. pointerdown remains for mouse and pen.
+      if (event.pointerType === "touch") {
+        return;
+      }
+      unlock();
     }
 
-    window.addEventListener("pointerdown", unlock, { passive: true });
-    window.addEventListener("touchend", unlock, { passive: true });
-    window.addEventListener("keydown", unlock);
+    function handleTouchEnd() {
+      unlock();
+    }
+
+    function handleKeyDown() {
+      unlock();
+    }
+
+    function detach() {
+      clearUnlockTimer();
+      window.removeEventListener("pointerdown", handlePointerDown);
+      window.removeEventListener("touchend", handleTouchEnd);
+      window.removeEventListener("keydown", handleKeyDown);
+    }
+
+    window.addEventListener("pointerdown", handlePointerDown, {
+      passive: true,
+    });
+    window.addEventListener("touchend", handleTouchEnd, { passive: true });
+    window.addEventListener("keydown", handleKeyDown);
 
     return () => {
       detach();
@@ -1438,7 +1486,7 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
         return;
       }
 
-      handleSourceFailure(false);
+      handleSourceFailure();
     };
 
     audio.addEventListener("loadedmetadata", onLoadedMetadata);

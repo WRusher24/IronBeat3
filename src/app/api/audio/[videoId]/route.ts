@@ -10,6 +10,7 @@ import {
 } from "@/lib/http";
 import { MusicServiceError, resolveAudioStream } from "@/lib/music";
 import { checkRateLimit } from "@/lib/rate-limit";
+import { createStreamToken } from "@/lib/session";
 import { isVideoId } from "@/lib/tracks";
 
 export const dynamic = "force-dynamic";
@@ -68,9 +69,12 @@ export async function GET(request: NextRequest, context: RouteContext) {
         );
       }
 
+      const proxyToken = await createStreamToken(videoId);
+
       return json({
         videoId,
         sources,
+        proxyUrl: `/api/audio/${videoId}/stream?token=${encodeURIComponent(proxyToken)}`,
         title: resolved.title ?? null,
         artist: resolved.artist ?? null,
         duration: resolved.duration ?? null,

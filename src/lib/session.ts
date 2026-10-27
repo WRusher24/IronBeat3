@@ -85,3 +85,35 @@ export const sessionCookieOptions = {
   path: "/",
   maxAge: SESSION_DURATION_SECONDS,
 };
+
+const STREAM_TOKEN_AUDIENCE = "ironbeat-audio-relay";
+
+export async function createStreamToken(videoId: string): Promise<string> {
+  return new SignJWT({ scope: "audio" })
+    .setProtectedHeader({ alg: "HS256", typ: "JWT" })
+    .setSubject(videoId)
+    .setAudience(STREAM_TOKEN_AUDIENCE)
+    .setIssuedAt()
+    .setExpirationTime("2h")
+    .sign(getSecretKey());
+}
+
+export async function verifyStreamToken(
+  token: string | null | undefined,
+  videoId: string,
+): Promise<boolean> {
+  if (!token) {
+    return false;
+  }
+
+  try {
+    const { payload } = await jwtVerify(token, getSecretKey(), {
+      algorithms: ["HS256"],
+      audience: STREAM_TOKEN_AUDIENCE,
+    });
+
+    return payload.sub === videoId;
+  } catch {
+    return false;
+  }
+}

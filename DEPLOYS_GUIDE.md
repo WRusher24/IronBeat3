@@ -242,6 +242,7 @@ Current behavior:
 - Stream lookup: Invidious with `local=true` (proxied, iOS-friendly) first, then other Invidious instances, then Piped audio or muxed MP4.
 - The client tries every returned source before requesting a fresh resolution.
 - Failed instances are cooled down for two minutes on that server instance.
+- iPhone and iPad play through the authenticated same-origin relay at `/api/audio/[videoId]/stream`. The relay forwards range requests, retries sources server-side, and falls back to a fresh Piped resolution. This avoids requiring the phone itself to reach third-party media hosts. The route declares `maxDuration = 300`; if your Vercel plan enforces a lower limit, very long single connections may be cut and the client falls back to direct sources.
 
 For a dependable personal deployment, self-host Piped or Invidious:
 
@@ -268,7 +269,7 @@ Because caches and cooldowns live in process memory, each Vercel instance mainta
 | Search cache | Tune `SEARCH_CACHE_TTL_SECONDS` if providers are slow. |
 | Dependency updates | Run `npm audit --omit=dev` before releases. Dev-only advisories in Drizzle Kit’s bundled esbuild do not ship to production. |
 | Health checks | Use any authenticated GET such as `/login` for uptime checks. Do not poll authenticated APIs. |
-| Media bandwidth | Audio bytes go directly from the provider to the device; Vercel does not proxy the stream. |
+| Media bandwidth | Desktop audio goes directly from the provider to the device. iOS audio is relayed same-origin and consumes Vercel function bandwidth/time; the direct fallback is used if the relay fails. |
 
 ---
 
@@ -295,6 +296,14 @@ The provider returned URLs that the device could not fetch, or the source expire
 ### Autoplay did not start after tapping a vibe
 
 Mobile browsers can block media started after an asynchronous fetch. IronBeat unlocks the media element on the first gesture and shows **“Tap play to start audio”** if the browser still refuses. One tap fixes it; subsequent tracks autoplay normally.
+
+### iPhone shows results but audio never starts
+
+- Confirm the app is version **1.1.0 or newer** in Settings. Settings also shows **iOS relay** when the iPhone is using the same-origin audio route.
+- The first playback requires a tap. If you see **Tap play to start audio**, tap it once.
+- Close and reopen the home-screen app, or remove/re-add it so the updated service worker and bundle load.
+- If it still fails, the relay may be returning an error. Check Vercel function logs for `/api/audio/.../stream`; a 401 means the signed relay token expired or the session is invalid (pause/replay the track to mint a fresh token), and a 502 means the server could not reach any provider.
+- Verify the phone can reach the app origin itself (it loads the search results, so it usually can). The relay then performs the provider fetch server-side.
 
 ### Audio stops when the screen locks
 

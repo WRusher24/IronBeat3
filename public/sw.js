@@ -1,4 +1,4 @@
-const PRECACHE_VERSION = "ironbeat-pwa-v1";
+const PRECACHE_VERSION = "ironbeat-pwa-v2";
 const PRECACHE_URLS = [
   "/offline.html",
   "/manifest.webmanifest",

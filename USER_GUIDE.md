@@ -213,6 +213,7 @@ Signing out clears the current session, stops the track, and returns you to the 
 | A track skips instantly | That provider could not deliver the audio. IronBeat automatically tries the next source and track. Try again or choose another result. |
 | Search says the music service is unavailable | Public instances can be briefly down or rate-limited. Wait a minute and retry. |
 | Audio stops when the screen locks | Use Safari or the installed home-screen app, start with a tap, and check Low Power Mode / in-app browser behavior. |
+| iPhone still won’t start audio | Check that Settings shows **IronBeat v1.1.0** and **iOS relay**, then fully close and reopen the app. Tap the play button once if the app asks. If it still fails, remove the home-screen app and re-add it from Safari to clear an old cached bundle. |
 | Home-screen icon looks outdated | Remove the app from the home screen and add it again from Safari. |
 | PWA shows an old version | Close all app instances, reopen, or remove/re-add the home-screen app. |
 | “Too many requests” | Wait for the cooldown shown by the retry interval, then try again. |

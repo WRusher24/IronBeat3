@@ -1,6 +1,6 @@
 {
   "name": "ironbeat",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "private": true,
   "description": "IronBeat — a mobile-first workout music streaming PWA with instant search, mood decks, playlists, and iOS background playback.",
   "engines": {
