@@ -40,7 +40,7 @@ async function trySources(
   const attempt = async (source: OpenStream["source"]): Promise<OpenStream> => {
     const controller = new AbortController();
     controllers.set(source, controller);
-    const headerTimer = setTimeout(() => controller.abort(), 10_000);
+    const headerTimer = setTimeout(() => controller.abort(), 6_000);
 
     try {
       const upstream = await fetch(source.url, {

@@ -122,7 +122,7 @@ export async function resolveInvidiousStreams(
   const url = new URL(`${base}/api/v1/videos/${videoId}`);
   url.searchParams.set("local", "true");
 
-  const payload = await fetchJson<InvidiousVideo>(url.toString(), 8_000);
+  const payload = await fetchJson<InvidiousVideo>(url.toString(), 5_000);
 
   if (payload.error) {
     const blocked = /login|bot|sign in|captcha/i.test(payload.error);
