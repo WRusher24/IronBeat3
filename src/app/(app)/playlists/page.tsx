@@ -12,7 +12,7 @@ import Link from "next/link";
 import { useCallback, useEffect, useState } from "react";
 
 import { useFavorites } from "@/components/favorites-provider";
-import { usePlayer } from "@/components/player/player-provider";
+import { usePlayerActions } from "@/components/player/player-provider";
 import { PlaylistSheet } from "@/components/playlist-sheet";
 import { SmartShuffleButton } from "@/components/smart-shuffle-button";
 import { TrackList } from "@/components/track-list";
@@ -37,7 +37,7 @@ const TABS: Array<{ id: TabId; label: string }> = [
 ];
 
 export default function LibraryPage() {
-  const { playQueue } = usePlayer();
+  const { playQueue } = usePlayerActions();
   const { favorites, loading: favoritesLoading, refresh } = useFavorites();
   const { toast } = useToast();
 

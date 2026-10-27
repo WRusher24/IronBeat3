@@ -40,19 +40,7 @@ type PlayQueueOptions = {
   shuffle?: boolean;
 };
 
-export type PlayerContextValue = {
-  queue: Track[];
-  current: Track | null;
-  currentIndex: number;
-  isPlaying: boolean;
-  isLoading: boolean;
-  isBlocked: boolean;
-  error: string | null;
-  currentTime: number;
-  duration: number;
-  repeat: RepeatMode;
-  shuffle: boolean;
-  isExpanded: boolean;
+export type PlayerActions = {
   playQueue: (
     tracks: Track[],
     startIndex?: number,
@@ -76,7 +64,30 @@ export type PlayerContextValue = {
   isCurrentTrack: (videoId: string) => boolean;
 };
 
+export type PlaybackStatus = {
+  currentVideoId: string | null;
+  isPlaying: boolean;
+  isLoading: boolean;
+};
+
+export type PlayerContextValue = PlayerActions & {
+  queue: Track[];
+  current: Track | null;
+  currentIndex: number;
+  isPlaying: boolean;
+  isLoading: boolean;
+  isBlocked: boolean;
+  error: string | null;
+  currentTime: number;
+  duration: number;
+  repeat: RepeatMode;
+  shuffle: boolean;
+  isExpanded: boolean;
+};
+
 const PlayerContext = createContext<PlayerContextValue | null>(null);
+const PlayerActionsContext = createContext<PlayerActions | null>(null);
+const PlayerStatusContext = createContext<PlaybackStatus | null>(null);
 
 function isRepeatMode(value: unknown): value is RepeatMode {
   return value === "off" || value === "all" || value === "one";
@@ -97,7 +108,7 @@ function readPersistedPlayer(): {
 
     const parsed = JSON.parse(raw) as Record<string, unknown>;
     const queue = Array.isArray(parsed.queue)
-      ? parsed.queue.filter(isTrackLike).slice(0, 100)
+      ? parsed.queue.filter(isTrackLike).slice(0, 300)
       : [];
 
     if (queue.length === 0) {
@@ -135,11 +146,6 @@ function artworkFor(track: Track) {
     {
       src: `https://i.ytimg.com/vi/${track.videoId}/hqdefault.jpg`,
       sizes: "480x360",
-      type: "image/jpeg",
-    },
-    {
-      src: `https://i.ytimg.com/vi/${track.videoId}/maxresdefault.jpg`,
-      sizes: "1280x720",
       type: "image/jpeg",
     },
   ];
@@ -760,7 +766,7 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
       window.localStorage.setItem(
         PLAYER_STORAGE_KEY,
         JSON.stringify({
-          queue: queueRef.current.slice(0, 100),
+          queue: queueRef.current.slice(0, 300),
           index: indexRef.current,
           position: timeRef.current,
           repeat: repeatRef.current,
@@ -776,6 +782,50 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
     (videoId: string) =>
       queueRef.current[indexRef.current]?.videoId === videoId,
     [],
+  );
+
+  const next = useCallback(() => {
+    goNext(false);
+  }, [goNext]);
+
+  const actions = useMemo<PlayerActions>(
+    () => ({
+      playQueue,
+      playTrack,
+      playAt,
+      toggle,
+      play,
+      pause,
+      next,
+      previous: goPrevious,
+      seek,
+      setRepeat,
+      setShuffle,
+      toggleShuffle,
+      enqueue,
+      removeFromQueue,
+      clear,
+      setExpanded,
+      isCurrentTrack,
+    }),
+    [
+      playQueue,
+      playTrack,
+      playAt,
+      toggle,
+      play,
+      pause,
+      next,
+      goPrevious,
+      seek,
+      setRepeat,
+      setShuffle,
+      toggleShuffle,
+      enqueue,
+      removeFromQueue,
+      clear,
+      isCurrentTrack,
+    ],
   );
 
   useEffect(() => {
@@ -1179,8 +1229,18 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
 
   const current = currentIndex >= 0 ? (queue[currentIndex] ?? null) : null;
 
+  const status = useMemo<PlaybackStatus>(
+    () => ({
+      currentVideoId: current?.videoId ?? null,
+      isPlaying,
+      isLoading,
+    }),
+    [current?.videoId, isPlaying, isLoading],
+  );
+
   const value = useMemo<PlayerContextValue>(
     () => ({
+      ...actions,
       queue,
       current,
       currentIndex,
@@ -1193,25 +1253,9 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
       repeat,
       shuffle,
       isExpanded,
-      playQueue,
-      playTrack,
-      playAt,
-      toggle,
-      play,
-      pause,
-      next: () => goNext(false),
-      previous: goPrevious,
-      seek,
-      setRepeat,
-      setShuffle,
-      toggleShuffle,
-      enqueue,
-      removeFromQueue,
-      clear,
-      setExpanded,
-      isCurrentTrack,
     }),
     [
+      actions,
       queue,
       current,
       currentIndex,
@@ -1224,35 +1268,23 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
       repeat,
       shuffle,
       isExpanded,
-      playQueue,
-      playTrack,
-      playAt,
-      toggle,
-      play,
-      pause,
-      goNext,
-      goPrevious,
-      seek,
-      setRepeat,
-      setShuffle,
-      toggleShuffle,
-      enqueue,
-      removeFromQueue,
-      clear,
-      isCurrentTrack,
     ],
   );
 
   return (
-    <PlayerContext.Provider value={value}>
-      {children}
-      <audio
-        ref={audioRef}
-        preload="metadata"
-        playsInline
-        className="pointer-events-none fixed h-px w-px overflow-hidden opacity-0"
-      />
-    </PlayerContext.Provider>
+    <PlayerActionsContext.Provider value={actions}>
+      <PlayerStatusContext.Provider value={status}>
+        <PlayerContext.Provider value={value}>
+          {children}
+          <audio
+            ref={audioRef}
+            preload="metadata"
+            playsInline
+            className="pointer-events-none fixed h-px w-px overflow-hidden opacity-0"
+          />
+        </PlayerContext.Provider>
+      </PlayerStatusContext.Provider>
+    </PlayerActionsContext.Provider>
   );
 }
 
@@ -1260,6 +1292,22 @@ export function usePlayer(): PlayerContextValue {
   const context = useContext(PlayerContext);
   if (!context) {
     throw new Error("usePlayer must be used inside PlayerProvider.");
+  }
+  return context;
+}
+
+export function usePlayerActions(): PlayerActions {
+  const context = useContext(PlayerActionsContext);
+  if (!context) {
+    throw new Error("usePlayerActions must be used inside PlayerProvider.");
+  }
+  return context;
+}
+
+export function usePlaybackStatus(): PlaybackStatus {
+  const context = useContext(PlayerStatusContext);
+  if (!context) {
+    throw new Error("usePlaybackStatus must be used inside PlayerProvider.");
   }
   return context;
 }

@@ -5,7 +5,7 @@ import { useState, type ReactNode } from "react";
 
 import { AddToPlaylistSheet } from "@/components/add-to-playlist-sheet";
 import { TrackRow } from "@/components/track-row";
-import { usePlayer } from "@/components/player/player-provider";
+import { usePlayerActions } from "@/components/player/player-provider";
 import { EmptyState } from "@/components/ui/empty-state";
 import { cn } from "@/lib/cn";
 import type { Track } from "@/types";
@@ -23,7 +23,7 @@ export function TrackList({
   emptyState,
   className,
 }: TrackListProps) {
-  const { playQueue } = usePlayer();
+  const { playQueue } = usePlayerActions();
   const [addTarget, setAddTarget] = useState<Track | null>(null);
   const [removingId, setRemovingId] = useState<string | null>(null);
 

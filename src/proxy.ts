@@ -6,11 +6,13 @@ const AUTH_PATHS = new Set(["/login", "/register"]);
 
 export async function proxy(request: NextRequest) {
   const { pathname } = request.nextUrl;
+  const normalizedPath =
+    pathname.length > 1 ? pathname.replace(/\/+$/, "") : pathname;
   const claims = await verifySessionToken(
     request.cookies.get(SESSION_COOKIE)?.value,
   );
 
-  if (AUTH_PATHS.has(pathname)) {
+  if (AUTH_PATHS.has(normalizedPath)) {
     if (claims) {
       return NextResponse.redirect(new URL("/", request.url));
     }

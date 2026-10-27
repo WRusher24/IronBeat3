@@ -6,7 +6,7 @@ import { useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
 
 import { useFavorites } from "@/components/favorites-provider";
-import { usePlayer } from "@/components/player/player-provider";
+import { usePlayerActions } from "@/components/player/player-provider";
 import { SearchBar } from "@/components/search-bar";
 import { SearchChips } from "@/components/search-chips";
 import { SmartShuffleButton } from "@/components/smart-shuffle-button";
@@ -24,7 +24,7 @@ import type {
 
 export default function HomePage() {
   const router = useRouter();
-  const { playQueue } = usePlayer();
+  const { playQueue } = usePlayerActions();
   const { favorites } = useFavorites();
   const [history, setHistory] = useState<SearchHistoryEntry[]>([]);
   const [recent, setRecent] = useState<Track[]>([]);
@@ -82,7 +82,7 @@ export default function HomePage() {
     history.length > 0 ? history.map((entry) => entry.query) : STARTER_CHIPS;
   const firstName = user
     ? firstNameFor(user.displayName, user.email)
-    : "athlete";
+    : "Athlete";
   const initials = user ? initialsFor(user.displayName, user.email) : "IB";
 
   return (

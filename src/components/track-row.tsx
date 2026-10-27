@@ -9,7 +9,7 @@ import {
 } from "lucide-react";
 
 import { useFavorites } from "@/components/favorites-provider";
-import { usePlayer } from "@/components/player/player-provider";
+import { usePlaybackStatus } from "@/components/player/player-provider";
 import { Equalizer } from "@/components/ui/loaders";
 import { cn } from "@/lib/cn";
 import { formatDuration } from "@/lib/format";
@@ -32,10 +32,10 @@ export function TrackRow({
   removing = false,
   showRemove = false,
 }: TrackRowProps) {
-  const { current, isPlaying, isLoading } = usePlayer();
+  const { currentVideoId, isPlaying, isLoading } = usePlaybackStatus();
   const { isFavorite, toggle, pendingIds } = useFavorites();
 
-  const active = current?.videoId === track.videoId;
+  const active = currentVideoId === track.videoId;
   const favorited = isFavorite(track.videoId);
   const favoritePending = pendingIds.has(track.videoId);
 

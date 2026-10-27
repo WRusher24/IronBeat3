@@ -12,7 +12,7 @@ import Link from "next/link";
 import { useParams, useRouter } from "next/navigation";
 import { useCallback, useEffect, useState } from "react";
 
-import { usePlayer } from "@/components/player/player-provider";
+import { usePlayerActions } from "@/components/player/player-provider";
 import { PlaylistSheet } from "@/components/playlist-sheet";
 import { TrackList } from "@/components/track-list";
 import { Button } from "@/components/ui/button";
@@ -31,7 +31,7 @@ export default function PlaylistDetailPage() {
   const router = useRouter();
   const playlistId =
     typeof params.playlistId === "string" ? params.playlistId : "";
-  const { playQueue } = usePlayer();
+  const { playQueue } = usePlayerActions();
   const { toast } = useToast();
 
   const [playlist, setPlaylist] = useState<PlaylistDetail | null>(null);

@@ -3,13 +3,13 @@
 import { Play, Sparkles } from "lucide-react";
 import { useState } from "react";
 
-import { usePlayer } from "@/components/player/player-provider";
+import { usePlayerActions } from "@/components/player/player-provider";
 import { useToast } from "@/components/ui/toast";
 import { apiFetch, errorMessage } from "@/lib/client-api";
 import type { SmartShuffleResponse } from "@/types";
 
 export function SmartShuffleButton() {
-  const { playQueue } = usePlayer();
+  const { playQueue } = usePlayerActions();
   const { toast } = useToast();
   const [loading, setLoading] = useState(false);
 

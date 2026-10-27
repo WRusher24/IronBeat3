@@ -42,10 +42,11 @@ export async function POST(request: NextRequest) {
     }
 
     const { email, password } = parsed.data;
-    const displayName =
+    const displayName = (
       parsed.data.displayName?.trim() ||
       email.split("@")[0]?.trim() ||
-      "Athlete";
+      "Athlete"
+    ).slice(0, 40);
 
     const db = getDb();
     const [existing] = await db

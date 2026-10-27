@@ -15,7 +15,7 @@ import {
 import { useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
 
-import { usePlayer } from "@/components/player/player-provider";
+import { usePlayerActions } from "@/components/player/player-provider";
 import { useTheme } from "@/components/theme-provider";
 import { Button } from "@/components/ui/button";
 import { Sheet } from "@/components/ui/sheet";
@@ -29,7 +29,7 @@ import type { PublicUser } from "@/types";
 export default function SettingsPage() {
   const router = useRouter();
   const { theme, setTheme } = useTheme();
-  const { clear } = usePlayer();
+  const { clear } = usePlayerActions();
   const { toast } = useToast();
 
   const [user, setUser] = useState<PublicUser | null>(null);

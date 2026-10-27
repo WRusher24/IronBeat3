@@ -4,7 +4,7 @@ import { Play, Shuffle, WifiOff } from "lucide-react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { useEffect, useRef, useState } from "react";
 
-import { usePlayer } from "@/components/player/player-provider";
+import { usePlayerActions } from "@/components/player/player-provider";
 import { SearchBar } from "@/components/search-bar";
 import { SearchChips } from "@/components/search-chips";
 import { TrackList } from "@/components/track-list";
@@ -26,7 +26,7 @@ type SearchStatus = "idle" | "loading" | "ready" | "error";
 export function SearchView() {
   const router = useRouter();
   const searchParams = useSearchParams();
-  const { playQueue } = usePlayer();
+  const { playQueue } = usePlayerActions();
 
   const query = (searchParams.get("q") ?? "").trim();
   const autoplay = searchParams.get("autoplay") === "1";
