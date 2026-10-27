@@ -29,13 +29,18 @@ const FORWARDED_RESPONSE_HEADERS = [
   "last-modified",
 ];
 
+// Try the top sources at once and keep the first that answers, so a stalled
+// source does not hold up the others for its full header timeout.
 async function trySources(
   sources: OpenStream["source"][],
   range: string | null,
 ): Promise<OpenStream | null> {
-  for (const source of sources) {
+  const controllers = new Map<OpenStream["source"], AbortController>();
+
+  const attempt = async (source: OpenStream["source"]): Promise<OpenStream> => {
     const controller = new AbortController();
-    const headerTimer = setTimeout(() => controller.abort(), 12_000);
+    controllers.set(source, controller);
+    const headerTimer = setTimeout(() => controller.abort(), 10_000);
 
     try {
       const upstream = await fetch(source.url, {
@@ -50,19 +55,28 @@ async function trySources(
         },
       });
 
-      clearTimeout(headerTimer);
-
       if (upstream.ok || upstream.status === 206) {
         return { upstream, source };
       }
 
       await upstream.body?.cancel().catch(() => {});
-    } catch {
+      throw new Error(`Upstream responded with ${upstream.status}.`);
+    } finally {
       clearTimeout(headerTimer);
     }
-  }
+  };
 
-  return null;
+  try {
+    const winner = await Promise.any(sources.slice(0, 3).map(attempt));
+    for (const [source, controller] of controllers) {
+      if (source !== winner.source) {
+        controller.abort();
+      }
+    }
+    return winner;
+  } catch {
+    return null;
+  }
 }
 
 async function openUpstream(
