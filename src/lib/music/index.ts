@@ -119,8 +119,11 @@ export async function resolveAudioStream(
     ? [options.provider]
     : ["invidious", "piped"];
 
+  // Query every candidate at once and take the first one that answers, so a
+  // slow or broken instance no longer adds its full timeout to the wait.
   const attempted = new Set<string>();
   let lastError: unknown = null;
+  const attempts: Array<Promise<ResolvedStream>> = [];
 
   for (const provider of providers) {
     for (const base of getCandidates(provider, 3, "stream")) {
@@ -129,25 +132,38 @@ export async function resolveAudioStream(
       }
       attempted.add(base);
 
-      try {
-        const resolved =
-          provider === "piped"
-            ? await resolvePipedStreams(base, videoId)
-            : await resolveInvidiousStreams(base, videoId);
+      attempts.push(
+        (async () => {
+          try {
+            const resolved =
+              provider === "piped"
+                ? await resolvePipedStreams(base, videoId)
+                : await resolveInvidiousStreams(base, videoId);
+            markInstanceHealthy(base, "stream");
+            return resolved;
+          } catch (error) {
+            lastError = error;
+            console.warn(
+              `[ironbeat:stream] ${provider} ${base} failed for ${videoId}:`,
+              error instanceof Error ? error.message : error,
+            );
+            if (shouldCoolDown(error)) {
+              markInstanceDown(base, 90_000, "stream");
+            }
+            throw error;
+          }
+        })(),
+      );
+    }
+  }
 
-        markInstanceHealthy(base, "stream");
-        streamCache.set(cacheKey, resolved);
-        return resolved;
-      } catch (error) {
-        lastError = error;
-        console.warn(
-          `[ironbeat:stream] ${provider} ${base} failed for ${videoId}:`,
-          error instanceof Error ? error.message : error,
-        );
-        if (shouldCoolDown(error)) {
-          markInstanceDown(base, 90_000, "stream");
-        }
-      }
+  if (attempts.length > 0) {
+    try {
+      const resolved = await Promise.any(attempts);
+      streamCache.set(cacheKey, resolved);
+      return resolved;
+    } catch {
+      // Every candidate failed; fall through to the error below.
     }
   }
 
