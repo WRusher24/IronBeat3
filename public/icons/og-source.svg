@@ -1,0 +1,26 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="630" viewBox="0 0 1200 630">
+  <defs>
+    <radialGradient id="glow" cx="18%" cy="18%" r="80%">
+      <stop offset="0%" stop-color="#D4A373" stop-opacity="0.4" />
+      <stop offset="60%" stop-color="#8A6238" stop-opacity="0.1" />
+      <stop offset="100%" stop-color="#1C1C1E" stop-opacity="0" />
+    </radialGradient>
+    <linearGradient id="bar" x1="0" y1="1" x2="0" y2="0">
+      <stop offset="0%" stop-color="#B9854F" />
+      <stop offset="100%" stop-color="#F0C89A" />
+    </linearGradient>
+  </defs>
+  <rect width="1200" height="630" fill="#1C1C1E" />
+  <rect width="1200" height="630" fill="url(#glow)" />
+  <g fill="url(#bar)" transform="translate(-90, 0)">
+    <rect x="300" y="300" width="52" height="190" rx="26" />
+    <rect x="382" y="170" width="52" height="320" rx="26" />
+    <rect x="464" y="240" width="52" height="250" rx="26" />
+    <rect x="546" y="350" width="52" height="140" rx="26" />
+  </g>
+  <circle cx="628" cy="170" r="13" fill="#D4A373" />
+  <text x="700" y="288" font-family="Arial, Helvetica, sans-serif" font-size="24" font-weight="700" letter-spacing="10" fill="#D4A373">IRONBEAT</text>
+  <text x="700" y="368" font-family="Georgia, 'Times New Roman', serif" font-size="66" fill="#F7F3EC">Workout music,</text>
+  <text x="700" y="442" font-family="Georgia, 'Times New Roman', serif" font-size="66" font-style="italic" fill="#E4B384">instantly.</text>
+  <text x="703" y="508" font-family="Arial, Helvetica, sans-serif" font-size="18" letter-spacing="1" fill="#A9A49B">Instant search · vibe decks · background audio</text>
+</svg>
