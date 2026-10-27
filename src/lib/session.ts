@@ -88,8 +88,11 @@ export const sessionCookieOptions = {
 
 const STREAM_TOKEN_AUDIENCE = "ironbeat-audio-relay";
 
-export async function createStreamToken(videoId: string): Promise<string> {
-  return new SignJWT({ scope: "audio" })
+export async function createStreamToken(
+  videoId: string,
+  urls: string[] = [],
+): Promise<string> {
+  return new SignJWT({ scope: "audio", urls })
     .setProtectedHeader({ alg: "HS256", typ: "JWT" })
     .setSubject(videoId)
     .setAudience(STREAM_TOKEN_AUDIENCE)
@@ -115,5 +118,35 @@ export async function verifyStreamToken(
     return payload.sub === videoId;
   } catch {
     return false;
+  }
+}
+
+// Returns the upstream URLs bound into a valid stream token, or null when the
+// token is invalid. Lets the relay skip re-resolving the track on a cold
+// serverless instance.
+export async function readStreamTokenSources(
+  token: string | null | undefined,
+  videoId: string,
+): Promise<string[] | null> {
+  if (!token) {
+    return null;
+  }
+
+  try {
+    const { payload } = await jwtVerify(token, getSecretKey(), {
+      algorithms: ["HS256"],
+      audience: STREAM_TOKEN_AUDIENCE,
+    });
+
+    if (payload.sub !== videoId) {
+      return null;
+    }
+
+    const urls = Array.isArray(payload.urls) ? payload.urls : [];
+    return urls.filter(
+      (url): url is string => typeof url === "string" && /^https?:\/\//i.test(url),
+    );
+  } catch {
+    return null;
   }
 }

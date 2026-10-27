@@ -69,7 +69,10 @@ export async function GET(request: NextRequest, context: RouteContext) {
         );
       }
 
-      const proxyToken = await createStreamToken(videoId);
+      const proxyToken = await createStreamToken(
+        videoId,
+        sources.slice(0, 2).map((source) => source.url),
+      );
 
       return json({
         videoId,

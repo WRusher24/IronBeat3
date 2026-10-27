@@ -4,7 +4,7 @@ import { getSessionClaims } from "@/lib/auth-server";
 import { jsonError, unauthorized } from "@/lib/http";
 import { MusicServiceError, resolveAudioStream } from "@/lib/music";
 import { USER_AGENT } from "@/lib/music/upstream";
-import { verifyStreamToken } from "@/lib/session";
+import { readStreamTokenSources } from "@/lib/session";
 import { isVideoId } from "@/lib/tracks";
 
 export const dynamic = "force-dynamic";
@@ -68,7 +68,18 @@ async function trySources(
 async function openUpstream(
   videoId: string,
   range: string | null,
+  knownUrls: string[] = [],
 ): Promise<OpenStream | null> {
+  if (knownUrls.length > 0) {
+    const direct = await trySources(
+      knownUrls.map((url) => ({ url, mimeType: "audio/mp4" }) as OpenStream["source"]),
+      range,
+    );
+    if (direct) {
+      return direct;
+    }
+  }
+
   try {
     const primary = await resolveAudioStream(videoId);
     const primaryResult = await trySources(primary.sources, range);
@@ -185,28 +196,29 @@ async function authorize(
   request: NextRequest,
   context: RouteContext,
 ): Promise<
-  | { videoId: string; error: null }
-  | { videoId: null; error: Response }
+  | { videoId: string; knownUrls: string[]; error: null }
+  | { videoId: null; knownUrls: string[]; error: Response }
 > {
   const { videoId } = await context.params;
   if (!isVideoId(videoId)) {
     return {
       videoId: null,
+      knownUrls: [],
       error: jsonError("That track id is not valid.", 422),
     };
   }
 
   const token = request.nextUrl.searchParams.get("token");
-  const tokenValid = await verifyStreamToken(token, videoId);
+  const knownUrls = await readStreamTokenSources(token, videoId);
 
-  if (!tokenValid) {
+  if (!knownUrls) {
     const claims = await getSessionClaims();
     if (!claims) {
-      return { videoId: null, error: unauthorized() };
+      return { videoId: null, knownUrls: [], error: unauthorized() };
     }
   }
 
-  return { videoId, error: null };
+  return { videoId, knownUrls: knownUrls ?? [], error: null };
 }
 
 export async function GET(request: NextRequest, context: RouteContext) {
@@ -219,6 +231,7 @@ export async function GET(request: NextRequest, context: RouteContext) {
     const opened = await openUpstream(
       auth.videoId,
       request.headers.get("range"),
+      auth.knownUrls,
     );
 
     if (!opened) {
@@ -261,7 +274,7 @@ export async function HEAD(request: NextRequest, context: RouteContext) {
   }
 
   try {
-    const opened = await openUpstream(auth.videoId, "bytes=0-0");
+    const opened = await openUpstream(auth.videoId, "bytes=0-0", auth.knownUrls);
 
     if (!opened) {
       return new Response(null, { status: 502 });
