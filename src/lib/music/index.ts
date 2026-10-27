@@ -119,13 +119,15 @@ export async function resolveAudioStream(
     ? [options.provider]
     : ["invidious", "piped"];
 
-  // Query every candidate at once and take the first one that answers, so a
-  // slow or broken instance no longer adds its full timeout to the wait.
+  // Providers keep their priority order (their stream URLs are not
+  // interchangeable), but the instances within one provider are queried at
+  // once so a slow or broken instance does not add its timeout to the wait.
   const attempted = new Set<string>();
   let lastError: unknown = null;
-  const attempts: Array<Promise<ResolvedStream>> = [];
 
   for (const provider of providers) {
+    const attempts: Array<Promise<ResolvedStream>> = [];
+
     for (const base of getCandidates(provider, 3, "stream")) {
       if (attempted.has(base)) {
         continue;
@@ -155,15 +157,15 @@ export async function resolveAudioStream(
         })(),
       );
     }
-  }
 
-  if (attempts.length > 0) {
-    try {
-      const resolved = await Promise.any(attempts);
-      streamCache.set(cacheKey, resolved);
-      return resolved;
-    } catch {
-      // Every candidate failed; fall through to the error below.
+    if (attempts.length > 0) {
+      try {
+        const resolved = await Promise.any(attempts);
+        streamCache.set(cacheKey, resolved);
+        return resolved;
+      } catch {
+        // Every instance of this provider failed; try the next provider.
+      }
     }
   }
 
