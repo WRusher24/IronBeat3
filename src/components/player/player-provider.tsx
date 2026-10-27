@@ -175,6 +175,7 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
 
   const sourceUrlsRef = useRef<string[]>([]);
   const sourceIndexRef = useRef(0);
+  const sourceAttemptRef = useRef(0);
   const sourceCacheRef = useRef<Map<string, SourceCacheEntry>>(new Map());
   const loadTokenRef = useRef(0);
   const pendingSeekRef = useRef(0);
@@ -183,6 +184,10 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
   const failedIdsRef = useRef<Set<string>>(new Set());
   const recordedRef = useRef<Set<string>>(new Set());
   const lastPositionUpdateRef = useRef(0);
+  const playAttemptTimerRef = useRef<number | null>(null);
+  const loadWatchdogRef = useRef<number | null>(null);
+  const sourceFailureRef = useRef<(stalled?: boolean) => void>(() => {});
+  const lastFailureAtRef = useRef(0);
 
   const applyQueue = useCallback((next: Track[]) => {
     queueRef.current = next;
@@ -208,6 +213,25 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
     shuffleRef.current = next;
     setShuffleState(next);
   }, []);
+
+  const clearPlayAttemptTimer = useCallback(() => {
+    if (playAttemptTimerRef.current !== null) {
+      window.clearTimeout(playAttemptTimerRef.current);
+      playAttemptTimerRef.current = null;
+    }
+  }, []);
+
+  const clearLoadWatchdog = useCallback(() => {
+    if (loadWatchdogRef.current !== null) {
+      window.clearTimeout(loadWatchdogRef.current);
+      loadWatchdogRef.current = null;
+    }
+  }, []);
+
+  const clearPlaybackTimers = useCallback(() => {
+    clearPlayAttemptTimer();
+    clearLoadWatchdog();
+  }, [clearLoadWatchdog, clearPlayAttemptTimer]);
 
   const updateSessionMetadata = useCallback((track: Track) => {
     if (typeof navigator === "undefined" || !("mediaSession" in navigator)) {
@@ -284,9 +308,18 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
         return cached.urls;
       }
 
-      const payload = await apiFetch<AudioSourcesResponse>(
-        `/api/audio/${track.videoId}${refresh ? "?refresh=1" : ""}`,
-      );
+      const controller = new AbortController();
+      const requestTimer = window.setTimeout(() => controller.abort(), 20_000);
+
+      let payload: AudioSourcesResponse;
+      try {
+        payload = await apiFetch<AudioSourcesResponse>(
+          `/api/audio/${track.videoId}${refresh ? "?refresh=1" : ""}`,
+          { signal: controller.signal },
+        );
+      } finally {
+        window.clearTimeout(requestTimer);
+      }
 
       const urls = payload.sources
         .map((source) => source.url)
@@ -306,38 +339,115 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
     [],
   );
 
-  const attemptPlay = useCallback(async (token: number) => {
-    const audio = audioRef.current;
-    if (!audio) {
-      return;
-    }
-
-    desiredPlayRef.current = true;
-
-    try {
-      await audio.play();
-      if (token !== loadTokenRef.current) {
-        return;
-      }
-      blockedRef.current = false;
-      setIsBlocked(false);
-    } catch (playError) {
-      if (token !== loadTokenRef.current) {
+  const attemptPlay = useCallback(
+    async (token: number, attemptId = sourceAttemptRef.current) => {
+      const audio = audioRef.current;
+      if (!audio) {
         return;
       }
 
-      setIsLoading(false);
-      const name = playError instanceof DOMException ? playError.name : "";
+      desiredPlayRef.current = true;
+      clearPlayAttemptTimer();
 
-      if (name === "NotAllowedError") {
-        blockedRef.current = true;
-        setIsBlocked(true);
-        setError(null);
-      } else if (name !== "AbortError") {
-        setError("Playback was interrupted. Tap play to retry.");
+      const isCurrentAttempt = () =>
+        token === loadTokenRef.current &&
+        attemptId === sourceAttemptRef.current;
+
+      // Mobile browsers can leave play() pending forever when a gesture policy
+      // or a broken source prevents playback. Surface the tap-to-play state
+      // once the media is buffered but still refuses to start.
+      playAttemptTimerRef.current = window.setTimeout(() => {
+        playAttemptTimerRef.current = null;
+        if (!isCurrentAttempt() || !desiredPlayRef.current) {
+          return;
+        }
+
+        const currentAudio = audioRef.current;
+        if (!currentAudio) {
+          return;
+        }
+
+        const rawSrc = currentAudio.getAttribute("src");
+        if (!rawSrc || rawSrc === SILENCE_SRC) {
+          return;
+        }
+
+        if (currentAudio.paused && currentAudio.readyState >= 3) {
+          blockedRef.current = true;
+          setIsBlocked(true);
+          setIsLoading(false);
+          setError(null);
+        }
+      }, 3_500);
+
+      try {
+        await audio.play();
+        clearPlayAttemptTimer();
+        if (!isCurrentAttempt()) {
+          return;
+        }
+        blockedRef.current = false;
+        setIsBlocked(false);
+      } catch (playError) {
+        clearPlayAttemptTimer();
+        if (!isCurrentAttempt()) {
+          return;
+        }
+
+        const name = playError instanceof DOMException ? playError.name : "";
+        if (name === "AbortError") {
+          return;
+        }
+
+        setIsLoading(false);
+
+        if (name === "NotAllowedError") {
+          blockedRef.current = true;
+          setIsBlocked(true);
+          setError(null);
+        } else {
+          setError("Playback was interrupted. Tap play to retry.");
+        }
       }
-    }
-  }, []);
+    },
+    [clearPlayAttemptTimer],
+  );
+
+  const startLoadWatchdog = useCallback(
+    (token: number, attemptId = sourceAttemptRef.current) => {
+      clearLoadWatchdog();
+      loadWatchdogRef.current = window.setTimeout(() => {
+        loadWatchdogRef.current = null;
+        if (
+          token !== loadTokenRef.current ||
+          attemptId !== sourceAttemptRef.current ||
+          !desiredPlayRef.current
+        ) {
+          return;
+        }
+
+        const audio = audioRef.current;
+        if (!audio) {
+          return;
+        }
+
+        const rawSrc = audio.getAttribute("src");
+        if (!rawSrc || rawSrc === SILENCE_SRC) {
+          return;
+        }
+
+        if (audio.readyState >= 3) {
+          return;
+        }
+
+        console.warn(
+          "[ironbeat:player] Audio source stalled before it could play; requesting a fallback.",
+        );
+        sourceFailureRef.current(true);
+      }, 12_000);
+    },
+    [clearLoadWatchdog],
+  );
 
   const applySource = useCallback(
     (
@@ -351,6 +461,9 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
         return;
       }
 
+      clearLoadWatchdog();
+      lastFailureAtRef.current = 0;
+      const attemptId = ++sourceAttemptRef.current;
       pendingSeekRef.current = Math.max(0, position);
       timeRef.current = Math.max(0, position);
       setCurrentTime(Math.max(0, position));
@@ -358,15 +471,20 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
       audio.load();
 
       if (autoplay) {
-        void attemptPlay(token);
+        void attemptPlay(token, attemptId);
+        startLoadWatchdog(token, attemptId);
+      } else {
+        setIsLoading(false);
       }
     },
-    [attemptPlay],
+    [attemptPlay, clearLoadWatchdog, startLoadWatchdog],
   );
 
   const startTrack = useCallback(
     async (track: Track, autoplay: boolean, position = 0) => {
       const token = ++loadTokenRef.current;
+      sourceAttemptRef.current += 1;
+      clearPlaybackTimers();
       desiredPlayRef.current = autoplay;
       retriedProviderRef.current = false;
       setIsLoading(true);
@@ -382,9 +500,14 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
 
       const audio = audioRef.current;
       if (audio) {
-        audio.pause();
-        audio.removeAttribute("src");
-        audio.load();
+        // Do not abort an in-flight gesture-unlock clip: iOS grants media
+        // activation to this element when the silence starts. The real source
+        // replaces it as soon as stream resolution completes.
+        if (audio.getAttribute("src") !== SILENCE_SRC) {
+          audio.pause();
+          audio.removeAttribute("src");
+          audio.load();
+        }
       }
       sourceUrlsRef.current = [];
       sourceIndexRef.current = 0;
@@ -407,7 +530,13 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
         setError("Couldn't load this track. Try another one.");
       }
     },
-    [applyPlaying, applySource, fetchSources, updateSessionMetadata],
+    [
+      applyPlaying,
+      applySource,
+      clearPlaybackTimers,
+      fetchSources,
+      updateSessionMetadata,
+    ],
   );
 
   const setActiveIndex = useCallback(
@@ -513,6 +642,125 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
     [applyPlaying, setActiveIndex],
   );
 
+  const handleSourceFailure = useCallback(
+    (stalled = false) => {
+      if (indexRef.current < 0) {
+        return;
+      }
+
+      const audio = audioRef.current;
+      if (!audio) {
+        return;
+      }
+
+      const rawSrc = audio.getAttribute("src");
+      if (!rawSrc || rawSrc === SILENCE_SRC) {
+        return;
+      }
+
+      const now = Date.now();
+      if (now - lastFailureAtRef.current < 700) {
+        return;
+      }
+      lastFailureAtRef.current = now;
+
+      clearPlaybackTimers();
+      const track = queueRef.current[indexRef.current];
+      if (!track) {
+        return;
+      }
+
+      applyPlaying(false);
+      setIsLoading(false);
+
+      // A source that never buffers is unlikely to recover; skip the remaining
+      // formats on that host and ask for a fresh provider resolution.
+      if (stalled) {
+        sourceIndexRef.current = sourceUrlsRef.current.length;
+      }
+
+      const nextSourceIndex = sourceIndexRef.current + 1;
+      if (nextSourceIndex < sourceUrlsRef.current.length) {
+        sourceIndexRef.current = nextSourceIndex;
+        setError(null);
+        setIsLoading(true);
+        pendingSeekRef.current = timeRef.current;
+        applySource(
+          sourceUrlsRef.current[nextSourceIndex]!,
+          timeRef.current,
+          desiredPlayRef.current,
+          loadTokenRef.current,
+        );
+        return;
+      }
+
+      if (!retriedProviderRef.current) {
+        retriedProviderRef.current = true;
+        sourceCacheRef.current.delete(track.videoId);
+        const token = loadTokenRef.current;
+        setIsLoading(true);
+        setError("Reconnecting audio…");
+
+        void fetchSources(track, true)
+          .then((urls) => {
+            if (token !== loadTokenRef.current) {
+              return;
+            }
+            sourceUrlsRef.current = urls;
+            sourceIndexRef.current = 0;
+            applySource(
+              urls[0]!,
+              timeRef.current,
+              desiredPlayRef.current,
+              token,
+            );
+          })
+          .catch(() => {
+            if (token !== loadTokenRef.current) {
+              return;
+            }
+            failedIdsRef.current.add(track.videoId);
+            setIsLoading(false);
+            if (
+              failedIdsRef.current.size < queueRef.current.length &&
+              queueRef.current.length > 1
+            ) {
+              setError("This track isn't playable — skipping.");
+              window.setTimeout(() => goNext(true), 900);
+            } else {
+              applyPlaying(false);
+              setError("No playable tracks right now. Try another search.");
+            }
+          });
+        return;
+      }
+
+      failedIdsRef.current.add(track.videoId);
+
+      if (
+        failedIdsRef.current.size < queueRef.current.length &&
+        queueRef.current.length > 1
+      ) {
+        setError("This track isn't playable — skipping.");
+        window.setTimeout(() => goNext(true), 600);
+      } else {
+        applyPlaying(false);
+        setError("No playable tracks right now. Try another search.");
+      }
+    },
+    [
+      applyPlaying,
+      applySource,
+      clearPlaybackTimers,
+      fetchSources,
+      goNext,
+    ],
+  );
+
+  useEffect(() => {
+    sourceFailureRef.current = handleSourceFailure;
+  }, [handleSourceFailure]);
+
   const goPrevious = useCallback(() => {
     const audio = audioRef.current;
     if (audio && audio.currentTime > 3) {
@@ -555,8 +803,9 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
 
   const pause = useCallback(() => {
     desiredPlayRef.current = false;
+    clearPlaybackTimers();
     audioRef.current?.pause();
-  }, []);
+  }, [clearPlaybackTimers]);
 
   const toggle = useCallback(() => {
     const track = queueRef.current[indexRef.current];
@@ -577,9 +826,10 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
       void attemptPlay(loadTokenRef.current);
     } else {
       desiredPlayRef.current = false;
+      clearPlaybackTimers();
       audio.pause();
     }
-  }, [attemptPlay, startTrack]);
+  }, [attemptPlay, clearPlaybackTimers, startTrack]);
 
   const playQueue = useCallback(
     (
@@ -681,6 +931,9 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
 
   const clear = useCallback(() => {
     loadTokenRef.current += 1;
+    sourceAttemptRef.current += 1;
+    clearPlaybackTimers();
+    lastFailureAtRef.current = 0;
     const audio = audioRef.current;
     if (audio) {
       audio.pause();
@@ -719,7 +972,12 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
     } catch {
       // Ignore storage failures.
     }
-  }, [applyIndex, applyPlaying, applyQueue]);
+  }, [
+    applyIndex,
+    applyPlaying,
+    applyQueue,
+    clearPlaybackTimers,
+  ]);
 
   const removeFromQueue = useCallback(
     (index: number) => {
@@ -957,48 +1215,76 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
   }, [isPlaying]);
 
   useEffect(() => {
-    const audio = audioRef.current;
-    if (!audio) {
+    const audioElement = audioRef.current;
+    if (!audioElement) {
       return;
     }
 
-    let unlocked = false;
+    const audio: HTMLAudioElement = audioElement;
 
-    const unlock = () => {
-      if (unlocked || indexRef.current >= 0) {
+    let unlocked = false;
+    let unlocking = false;
+
+    function unlock() {
+      if (unlocked || unlocking) {
         return;
       }
 
-      audio.muted = true;
+      const rawSrc = audio.getAttribute("src");
+      // Never replace a real source that is loaded or playing. The unlock is
+      // only for the first gesture and for a restored queue with no source.
+      if (rawSrc && rawSrc !== SILENCE_SRC) {
+        return;
+      }
+      if (!audio.paused && indexRef.current >= 0) {
+        return;
+      }
+
+      unlocking = true;
+      // The clip is silent PCM, so play it UNMUTED. iOS Safari only grants
+      // long-lived media activation for audible playback initiated directly by
+      // a gesture; a muted clip does not unlock the element for later
+      // programmatic play() calls.
+      audio.muted = false;
+      audio.volume = 1;
       audio.src = SILENCE_SRC;
+
       void audio
         .play()
         .then(() => {
           unlocked = true;
-          audio.muted = false;
+          unlocking = false;
+          detach();
+
           if (indexRef.current >= 0) {
             return;
           }
+          if (audio.getAttribute("src") !== SILENCE_SRC) {
+            return;
+          }
+
           audio.pause();
           audio.removeAttribute("src");
           audio.load();
-          window.removeEventListener("pointerdown", unlock);
-          window.removeEventListener("touchend", unlock);
-          window.removeEventListener("keydown", unlock);
         })
         .catch(() => {
-          audio.muted = false;
+          unlocking = false;
+          // Keep the listeners installed so the next gesture can retry.
         });
-    };
+    }
+
+    function detach() {
+      window.removeEventListener("pointerdown", unlock);
+      window.removeEventListener("touchend", unlock);
+      window.removeEventListener("keydown", unlock);
+    }
 
     window.addEventListener("pointerdown", unlock, { passive: true });
     window.addEventListener("touchend", unlock, { passive: true });
     window.addEventListener("keydown", unlock);
 
     return () => {
-      window.removeEventListener("pointerdown", unlock);
-      window.removeEventListener("touchend", unlock);
-      window.removeEventListener("keydown", unlock);
+      detach();
     };
   }, []);
 
@@ -1008,7 +1294,14 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
       return;
     }
 
+    const isSilenceSource = () =>
+      audio.getAttribute("src") === SILENCE_SRC;
+
     const onLoadedMetadata = () => {
+      if (isSilenceSource()) {
+        return;
+      }
+
       const track = queueRef.current[indexRef.current];
       const total =
         Number.isFinite(audio.duration) && audio.duration > 0
@@ -1039,17 +1332,22 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
         setCurrentTime(target);
         pendingSeekRef.current = 0;
       }
-
-      setIsLoading(false);
     };
 
     const onDurationChange = () => {
+      if (isSilenceSource()) {
+        return;
+      }
       if (Number.isFinite(audio.duration) && audio.duration > 0) {
         setDuration(audio.duration);
       }
     };
 
     const onTimeUpdate = () => {
+      if (isSilenceSource()) {
+        return;
+      }
+
       const time = Number.isFinite(audio.currentTime) ? audio.currentTime : 0;
       timeRef.current = time;
       setCurrentTime(time);
@@ -1062,6 +1360,11 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
     };
 
     const onPlaying = () => {
+      if (isSilenceSource()) {
+        return;
+      }
+
+      clearPlaybackTimers();
       applyPlaying(true);
       setIsLoading(false);
       setIsBlocked(false);
@@ -1077,24 +1380,43 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
     };
 
     const onPlay = () => {
+      if (isSilenceSource()) {
+        return;
+      }
       applyPlaying(true);
     };
 
     const onPause = () => {
+      if (isSilenceSource()) {
+        return;
+      }
+      clearPlaybackTimers();
       applyPlaying(false);
     };
 
     const onWaiting = () => {
+      if (isSilenceSource()) {
+        return;
+      }
       if (desiredPlayRef.current) {
         setIsLoading(true);
       }
     };
 
     const onCanPlay = () => {
+      if (isSilenceSource()) {
+        return;
+      }
+      clearLoadWatchdog();
       setIsLoading(false);
     };
 
     const onEnded = () => {
+      if (isSilenceSource()) {
+        return;
+      }
+
+      clearPlaybackTimers();
       applyPlaying(false);
 
       if (repeatRef.current === "one") {
@@ -1111,87 +1433,12 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
         return;
       }
 
-      const track = queueRef.current[indexRef.current];
-      if (!track) {
-        return;
-      }
-
       const rawSrc = audio.getAttribute("src");
       if (!rawSrc || rawSrc === SILENCE_SRC) {
         return;
       }
 
-      applyPlaying(false);
-      setIsLoading(false);
-
-      const nextSourceIndex = sourceIndexRef.current + 1;
-      if (nextSourceIndex < sourceUrlsRef.current.length) {
-        sourceIndexRef.current = nextSourceIndex;
-        setError(null);
-        setIsLoading(true);
-        pendingSeekRef.current = timeRef.current;
-        applySource(
-          sourceUrlsRef.current[nextSourceIndex]!,
-          timeRef.current,
-          desiredPlayRef.current,
-          loadTokenRef.current,
-        );
-        return;
-      }
-
-      if (!retriedProviderRef.current) {
-        retriedProviderRef.current = true;
-        sourceCacheRef.current.delete(track.videoId);
-        const token = loadTokenRef.current;
-        setIsLoading(true);
-        setError("Reconnecting audio…");
-
-        void fetchSources(track, true)
-          .then((urls) => {
-            if (token !== loadTokenRef.current) {
-              return;
-            }
-            sourceUrlsRef.current = urls;
-            sourceIndexRef.current = 0;
-            applySource(
-              urls[0]!,
-              timeRef.current,
-              desiredPlayRef.current,
-              token,
-            );
-          })
-          .catch(() => {
-            if (token !== loadTokenRef.current) {
-              return;
-            }
-            failedIdsRef.current.add(track.videoId);
-            setIsLoading(false);
-            if (
-              failedIdsRef.current.size < queueRef.current.length &&
-              queueRef.current.length > 1
-            ) {
-              setError("This track isn't playable — skipping.");
-              window.setTimeout(() => goNext(true), 900);
-            } else {
-              applyPlaying(false);
-              setError("No playable tracks right now. Try another search.");
-            }
-          });
-        return;
-      }
-
-      failedIdsRef.current.add(track.videoId);
-
-      if (
-        failedIdsRef.current.size < queueRef.current.length &&
-        queueRef.current.length > 1
-      ) {
-        setError("This track isn't playable — skipping.");
-        window.setTimeout(() => goNext(true), 600);
-      } else {
-        applyPlaying(false);
-        setError("No playable tracks right now. Try another search.");
-      }
+      handleSourceFailure(false);
     };
 
     audio.addEventListener("loadedmetadata", onLoadedMetadata);
@@ -1219,10 +1466,11 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
     };
   }, [
     applyPlaying,
-    applySource,
     attemptPlay,
-    fetchSources,
+    clearLoadWatchdog,
+    clearPlaybackTimers,
     goNext,
+    handleSourceFailure,
     recordPlay,
     updatePositionState,
   ]);
