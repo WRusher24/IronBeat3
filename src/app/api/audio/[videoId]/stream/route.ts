@@ -115,6 +115,72 @@ function responseHeaders(
   return headers;
 }
 
+function parseRange(
+  range: string | null,
+  total: number,
+): { start: number; end: number } | null {
+  const match = range?.match(/^bytes=(\d*)-(\d*)$/i);
+  if (!match || total <= 0 || (!match[1] && !match[2])) {
+    return null;
+  }
+
+  let start: number;
+  let end: number;
+  if (!match[1]) {
+    start = Math.max(0, total - Number(match[2]));
+    end = total - 1;
+  } else {
+    start = Number(match[1]);
+    end = match[2] ? Math.min(Number(match[2]), total - 1) : total - 1;
+  }
+
+  return start <= end && start < total ? { start, end } : null;
+}
+
+// iOS Safari only plays media from servers that answer Range requests with a
+// proper 206. Some upstreams ignore Range and return the whole file with 200,
+// so slice the stream here to honour the request.
+function sliceToRange(
+  upstream: Response,
+  headers: Headers,
+  range: string | null,
+): Response | null {
+  const total = Number(upstream.headers.get("content-length") ?? 0);
+  const parsed = upstream.body ? parseRange(range, total) : null;
+  if (!parsed || !upstream.body) {
+    return null;
+  }
+
+  const { start, end } = parsed;
+  let position = 0;
+  const slicer = new TransformStream<Uint8Array, Uint8Array>({
+    transform(chunk, controller) {
+      const chunkStart = position;
+      position += chunk.byteLength;
+      if (position <= start || chunkStart > end) {
+        return;
+      }
+      controller.enqueue(
+        chunk.subarray(
+          Math.max(0, start - chunkStart),
+          Math.min(chunk.byteLength, end + 1 - chunkStart),
+        ),
+      );
+      if (position > end) {
+        controller.terminate();
+      }
+    },
+  });
+
+  headers.set("Content-Range", `bytes ${start}-${end}/${total}`);
+  headers.set("Content-Length", String(end - start + 1));
+
+  return new Response(upstream.body.pipeThrough(slicer), {
+    status: 206,
+    headers,
+  });
+}
+
 async function authorize(
   request: NextRequest,
   context: RouteContext,
@@ -162,9 +228,19 @@ export async function GET(request: NextRequest, context: RouteContext) {
       );
     }
 
+    const headers = responseHeaders(opened.upstream, opened.source);
+    const range = request.headers.get("range");
+
+    if (range && opened.upstream.status === 200) {
+      const sliced = sliceToRange(opened.upstream, headers, range);
+      if (sliced) {
+        return sliced;
+      }
+    }
+
     return new Response(opened.upstream.body, {
       status: opened.upstream.status,
-      headers: responseHeaders(opened.upstream, opened.source),
+      headers,
     });
   } catch (error) {
     if (error instanceof MusicServiceError) {
